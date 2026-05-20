@@ -8,7 +8,7 @@ param location string
 param gatewaySubnetId string
 
 @description('VPN Gateway SKU')
-param skuName string = 'VpnGw1'
+param skuName string = 'VpnGw1AZ'
 
 resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   name: '${name}-pip'
@@ -16,6 +16,7 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   sku: {
     name: 'Standard'
   }
+  zones: ['1', '2', '3']
   properties: {
     publicIPAllocationMethod: 'Static'
   }

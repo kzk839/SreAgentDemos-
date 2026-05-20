@@ -250,7 +250,7 @@ module vnetOnprem 'modules/vnet.bicep' = {
   }
 }
 
-// Hub VNet: AzureFirewallSubnet + default subnet (GatewaySubnet added later with RT)
+// Hub VNet: AzureFirewallSubnet + default subnet + AzureBastionSubnet (GatewaySubnet added later with RT)
 module vnetHub 'modules/vnet.bicep' = {
   name: 'deploy-vnet-hub'
   params: {
@@ -260,6 +260,7 @@ module vnetHub 'modules/vnet.bicep' = {
     subnets: [
       { name: 'AzureFirewallSubnet', addressPrefix: '10.1.1.0/26' }
       { name: 'sn-default', addressPrefix: '10.1.2.0/24', nsgId: nsgDefault.id }
+      { name: 'AzureBastionSubnet', addressPrefix: '10.1.3.0/26' }
     ]
   }
 }
@@ -700,6 +701,44 @@ resource peerSpoke2ToHub 'Microsoft.Network/virtualNetworks/virtualNetworkPeerin
     vpnGwHub
     peerHubToSpoke2
   ]
+}
+
+// ============================================================
+// Azure Bastion (Hub VNet — Standard SKU with IP-based connection)
+// ============================================================
+resource bastionPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
+  name: '${prefix}-bastion-pip'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
+resource bastion 'Microsoft.Network/bastionHosts@2024-01-01' = {
+  name: '${prefix}-bastion'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    enableIpConnect: true
+    ipConfigurations: [
+      {
+        name: 'ipconfig1'
+        properties: {
+          publicIPAddress: {
+            id: bastionPip.id
+          }
+          subnet: {
+            id: vnetHub.outputs.subnets[2].id // AzureBastionSubnet
+          }
+        }
+      }
+    ]
+  }
 }
 
 // ============================================================
