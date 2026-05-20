@@ -1,0 +1,40 @@
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Environment / Secrets
+.env
+.env.*
+*.local
+
+# Bicep / ARM compiled output
+infra/*.json
+infra/modules/*.json
+
+# Azure CLI / deployment
+.azure/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+
+# Build outputs
+dist/
+*.js.map
+
+# Certificates and keys
+*.key
+*.pem
+*.pfx
+*.p12
+certs/
+keys/
+secrets/
+*-credentials.json
