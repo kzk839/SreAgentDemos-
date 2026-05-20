@@ -13,6 +13,9 @@ param privateEndpointSubnetId string = ''
 @description('Private DNS Zone ID for ACR')
 param privateDnsZoneId string = ''
 
+@description('Allow public network access (required for az acr build from local)')
+param publicNetworkAccess string = 'Enabled'
+
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: name
   location: location
@@ -21,7 +24,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   }
   properties: {
     adminUserEnabled: false
-    publicNetworkAccess: !empty(privateEndpointSubnetId) ? 'Disabled' : 'Enabled'
+    publicNetworkAccess: publicNetworkAccess
   }
 }
 
