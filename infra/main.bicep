@@ -250,7 +250,9 @@ module vnetOnprem 'modules/vnet.bicep' = {
   }
 }
 
-// Hub VNet: AzureFirewallSubnet + default subnet + AzureBastionSubnet (GatewaySubnet added later with RT)
+// Hub VNet: AzureFirewallSubnet + default subnet + AzureBastionSubnet + GatewaySubnet
+// Note: GatewaySubnet is included here for idempotency. Its route table is applied
+// separately via a child resource after the Azure Firewall and RT are created.
 module vnetHub 'modules/vnet.bicep' = {
   name: 'deploy-vnet-hub'
   params: {
@@ -261,6 +263,7 @@ module vnetHub 'modules/vnet.bicep' = {
       { name: 'AzureFirewallSubnet', addressPrefix: '10.1.1.0/26' }
       { name: 'sn-default', addressPrefix: '10.1.2.0/24', nsgId: nsgDefault.id }
       { name: 'AzureBastionSubnet', addressPrefix: '10.1.3.0/26' }
+      { name: 'GatewaySubnet', addressPrefix: '10.1.0.0/27' }
     ]
   }
 }
@@ -575,7 +578,7 @@ module dnsZoneCae 'modules/privateDnsZone.bicep' = {
 }
 
 // ============================================================
-// VPN Gateways (~30-45 min each)
+// VPN Gateways (~30-45 min each, sequential to avoid contention)
 // ============================================================
 module vpnGwOnprem 'modules/vpnGateway.bicep' = {
   name: 'deploy-vpngw-onprem'
@@ -588,6 +591,7 @@ module vpnGwOnprem 'modules/vpnGateway.bicep' = {
 
 module vpnGwHub 'modules/vpnGateway.bicep' = {
   name: 'deploy-vpngw-hub'
+  dependsOn: [vpnGwOnprem] // Sequential: avoid parallel VPN GW deployment failures
   params: {
     name: '${prefix}-vpngw-hub'
     location: location
