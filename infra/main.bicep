@@ -250,7 +250,7 @@ module vnetOnprem 'modules/vnet.bicep' = {
   }
 }
 
-// Hub VNet: AzureFirewallSubnet + default subnet + AzureBastionSubnet + GatewaySubnet
+// Hub VNet: AzureFirewallSubnet + default subnet + GatewaySubnet
 // Note: GatewaySubnet is included here for idempotency. Its route table is applied
 // separately via a child resource after the Azure Firewall and RT are created.
 module vnetHub 'modules/vnet.bicep' = {
@@ -262,7 +262,6 @@ module vnetHub 'modules/vnet.bicep' = {
     subnets: [
       { name: 'AzureFirewallSubnet', addressPrefix: '10.1.1.0/26' }
       { name: 'sn-default', addressPrefix: '10.1.2.0/24', nsgId: nsgDefault.id }
-      { name: 'AzureBastionSubnet', addressPrefix: '10.1.3.0/26' }
       { name: 'GatewaySubnet', addressPrefix: '10.1.0.0/27' }
     ]
   }
@@ -390,6 +389,33 @@ resource rtHubGw 'Microsoft.Network/routeTables@2024-01-01' = {
   }
 }
 
+// Hub default: route spoke traffic through FW (for Hub VM → Spoke)
+resource rtHubDefault 'Microsoft.Network/routeTables@2024-01-01' = {
+  name: '${prefix}-rt-hub-default'
+  location: location
+  properties: {
+    disableBgpRoutePropagation: false // VPN GW からの OnPrem ルートを受信するため有効
+    routes: [
+      {
+        name: 'to-spoke1'
+        properties: {
+          addressPrefix: spoke1Prefix
+          nextHopType: 'VirtualAppliance'
+          nextHopIpAddress: azureFirewall.outputs.privateIp
+        }
+      }
+      {
+        name: 'to-spoke2'
+        properties: {
+          addressPrefix: spoke2Prefix
+          nextHopType: 'VirtualAppliance'
+          nextHopIpAddress: azureFirewall.outputs.privateIp
+        }
+      }
+    ]
+  }
+}
+
 // ============================================================
 // VNets - Spokes (depend on route tables)
 // ============================================================
@@ -438,7 +464,7 @@ module vnetSpoke2 'modules/vnet.bicep' = {
 }
 
 // ============================================================
-// Hub GatewaySubnet (added after FW/RT ready)
+// Hub subnets updated after FW/RT ready
 // ============================================================
 resource hubGatewaySubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
   name: '${prefix}-vnet-hub/GatewaySubnet'
@@ -446,6 +472,20 @@ resource hubGatewaySubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01'
     addressPrefix: '10.1.0.0/27'
     routeTable: {
       id: rtHubGw.id
+    }
+  }
+}
+
+resource hubDefaultSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+  name: '${prefix}-vnet-hub/sn-default'
+  dependsOn: [hubGatewaySubnet] // serialize subnet updates to avoid conflict
+  properties: {
+    addressPrefix: '10.1.2.0/24'
+    networkSecurityGroup: {
+      id: nsgDefault.id
+    }
+    routeTable: {
+      id: rtHubDefault.id
     }
   }
 }
@@ -708,40 +748,44 @@ resource peerSpoke2ToHub 'Microsoft.Network/virtualNetworks/virtualNetworkPeerin
 }
 
 // ============================================================
-// Azure Bastion (Hub VNet — Standard SKU with IP-based connection)
+// Azure Bastion (Developer SKU — 各 VNet に 1 つずつ配置)
 // ============================================================
-resource bastionPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
-  name: '${prefix}-bastion-pip'
+resource bastionOnprem 'Microsoft.Network/bastionHosts@2024-01-01' = {
+  name: '${prefix}-bastion-onprem'
   location: location
   sku: {
-    name: 'Standard'
+    name: 'Developer'
   }
   properties: {
-    publicIPAllocationMethod: 'Static'
+    virtualNetwork: {
+      id: vnetOnprem.outputs.id
+    }
   }
 }
 
-resource bastion 'Microsoft.Network/bastionHosts@2024-01-01' = {
-  name: '${prefix}-bastion'
+resource bastionHub 'Microsoft.Network/bastionHosts@2024-01-01' = {
+  name: '${prefix}-bastion-hub'
   location: location
   sku: {
-    name: 'Standard'
+    name: 'Developer'
   }
   properties: {
-    enableIpConnect: true
-    ipConfigurations: [
-      {
-        name: 'ipconfig1'
-        properties: {
-          publicIPAddress: {
-            id: bastionPip.id
-          }
-          subnet: {
-            id: vnetHub.outputs.subnets[2].id // AzureBastionSubnet
-          }
-        }
-      }
-    ]
+    virtualNetwork: {
+      id: vnetHub.outputs.id
+    }
+  }
+}
+
+resource bastionSpoke2 'Microsoft.Network/bastionHosts@2024-01-01' = {
+  name: '${prefix}-bastion-spoke2'
+  location: location
+  sku: {
+    name: 'Developer'
+  }
+  properties: {
+    virtualNetwork: {
+      id: vnetSpoke2.outputs.id
+    }
   }
 }
 

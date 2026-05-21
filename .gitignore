@@ -29,6 +29,9 @@ Desktop.ini
 dist/
 *.js.map
 
+# Personal notes
+docs/post-deploy-checklist.md
+
 # Certificates and keys
 *.key
 *.pem
