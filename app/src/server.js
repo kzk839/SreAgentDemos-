@@ -124,33 +124,28 @@ app.get('/ready', async (_req, res) => {
 // ===========================================================================
 
 // ===========================================================================
-// BUG SCENARIO B: データベースパフォーマンス劣化
-// コメントを外すと N+1 クエリ + 重負荷集計が発生し DTU が枯渇します。
-// アラート: sql-dtu-high, sql-deadlock
-// 調査ポイント: SQL メトリクス急増、App Insights 依存関係テレメトリ
+// BUG SCENARIO B: N+1 クエリによるレスポンス遅延
+// コメントを外すと全件取得後に1件ずつ詳細を再取得する N+1 パターンが発生します。
+// アラート: app-slow-response
+// 調査ポイント: App Insights 依存関係テレメトリでの SQL 呼び出し数急増、デプロイ相関
 // ---------------------------------------------------------------------------
 // app.get('/api/items', async (req, res) => {
 //   try {
 //     const p = await getPool();
-//     // N+1 クエリ: 全件取得後に1件ずつ再取得（非効率パターン）
-//     const { recordset: ids } = await p.request().query('SELECT Id FROM Items');
+//     // N+1 クエリ: 全件取得後に1件ずつ再取得（よくあるORMの誤用パターン）
+//     const { recordset: allItems } = await p.request()
+//       .query('SELECT Id FROM Items ORDER BY CreatedAt DESC');
 //     const items = [];
-//     for (const row of ids) {
-//       const detail = await p.request().query(
-//         `SELECT * FROM Items WITH (HOLDLOCK) WHERE Id = ${row.Id};
-//          WAITFOR DELAY '00:00:01';`
-//       );
+//     for (const row of allItems) {
+//       const detail = await p.request()
+//         .input('id', row.Id)
+//         .query('SELECT * FROM Items WHERE Id = @id');
 //       items.push(detail.recordset[0]);
 //     }
-//     // 追加の重負荷集計クエリ
-//     await p.request().query(`
-//       DECLARE @i INT = 0;
-//       WHILE @i < 500000 BEGIN SET @i = @i + 1; END;
-//       SELECT COUNT(*) AS total FROM Items CROSS JOIN Items AS t2;
-//     `);
 //     res.json(items);
 //   } catch (err) {
-//     res.status(500).json({ error: err.message });
+//     console.error('GET /api/items error:', err);
+//     res.status(500).json({ error: 'Internal server error' });
 //   }
 // });
 // ===========================================================================
