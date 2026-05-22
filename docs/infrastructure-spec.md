@@ -304,6 +304,28 @@ $env:SRE_VPN_SHARED_KEY = '<VPN共有キー>'
 ./scripts/destroy.ps1 -ResourceGroup "rg-my-demo" # RG 名を指定
 ```
 
+### SRE Agent デプロイ（インフラとは別に実施）
+
+SRE Agent はインフラとは別の RG にデプロイします。対応リージョンは eastus2, swedencentral, australiaeast のみです。
+
+**前提:**
+- インフラ環境が `deploy.ps1` で先にデプロイ済みであること
+- Azure CLI 拡張機能 `application-insights` がインストール済みであること（スクリプトが自動インストールしますが、初回は事前に `az extension add --name application-insights` を実行しておくと安全です）
+
+```powershell
+# デプロイ
+./scripts/deploy-sre-agent.ps1 -InfraResourceGroup "rg-sre-demo6"
+
+# リージョンを変更する場合
+./scripts/deploy-sre-agent.ps1 -InfraResourceGroup "rg-sre-demo6" -Location "swedencentral"
+
+# 削除（インフラには影響なし）
+./scripts/destroy-sre-agent.ps1                   # 確認プロンプトあり
+./scripts/destroy-sre-agent.ps1 -NoConfirm         # 確認なしで即削除
+```
+
+デプロイ完了後、SRE Agent ポータル URL が表示されます。
+
 ### 手動デプロイ（個別実行）
 
 ```powershell
