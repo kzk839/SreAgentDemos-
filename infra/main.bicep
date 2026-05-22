@@ -547,6 +547,7 @@ module sqlDatabase 'modules/sqlDatabase.bicep' = {
     skuName: 'Basic'
     privateEndpointSubnetId: vnetSpoke1.outputs.subnets[1].id // sn-private-endpoints
     privateDnsZoneId: dnsZoneSql.outputs.id
+    logAnalyticsWorkspaceId: logAnalytics.id
   }
 }
 
