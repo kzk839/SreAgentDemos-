@@ -10,6 +10,17 @@ if (process.env.APPLICATIONINSIGHTS_CONNECTION_STRING) {
     .setAutoCollectExceptions(true)
     .setAutoCollectDependencies(true)
     .start();
+
+  // Exclude health probes from telemetry to avoid diluting response-time metrics
+  appInsights.defaultClient.addTelemetryProcessor((envelope) => {
+    if (envelope.data && envelope.data.baseData) {
+      const name = envelope.data.baseData.name || '';
+      if (name.includes('/health') || name.includes('/ready')) {
+        return false; // drop this telemetry
+      }
+    }
+    return true;
+  });
 }
 
 const express = require('express');
@@ -174,7 +185,7 @@ app.use((req, _res, next) => {
 });
 app.post('/chaos/latency', (req, res) => {
   latencyMs = Math.min(parseInt(req.body.ms) || 3000, 30000);
-  const seconds = Math.min(parseInt(req.body.seconds) || 60, 300);
+  const seconds = Math.min(parseInt(req.body.seconds) || 60, 3600);
   latencyUntil = Date.now() + seconds * 1000;
   console.warn(`[CHAOS] Latency injection: ${latencyMs}ms for ${seconds}s`);
   res.json({ chaos: 'latency', ms: latencyMs, seconds, status: 'active' });
@@ -183,7 +194,7 @@ app.post('/chaos/latency', (req, res) => {
 // Error injection: return 500 for all requests for N seconds
 let errorUntil = 0;
 app.post('/chaos/error', (req, res) => {
-  const seconds = Math.min(parseInt(req.body.seconds) || 60, 300);
+  const seconds = Math.min(parseInt(req.body.seconds) || 60, 3600);
   errorUntil = Date.now() + seconds * 1000;
   console.warn(`[CHAOS] Error injection for ${seconds}s`);
   res.json({ chaos: 'error', seconds, status: 'active' });
