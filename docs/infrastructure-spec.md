@@ -2,21 +2,21 @@
 
 ## 概要
 
-Azure SRE エージェントのデモ環境。インフラ・アプリ・DB の各観点で疑似的な障害やパフォーマンストラブルを発生させ、SRE エージェントがアラート/ログから自動で原因究明・解消を行うデモを想定した基盤インフラ。
+Azure SRE エージェントのデモ環境。インフラ・アプリ・DB の各観点で障害やパフォーマンストラブルを発生させ、SRE エージェントがアラート/ログから自動で原因究明・解消を行うデモを想定した基盤インフラ。
 
-- **インフラ層:** VM (OnPrem/Hub) + Azure Firewall + VPN で OS・NW レベルの障害を再現
-- **アプリ層:** Container Apps (Spoke1) + GitHub 連携 CI/CD でアプリケーション障害を再現
-- **DB 層:** Azure SQL Database (Spoke1) + Private Endpoint で DB 障害を再現
+- **アプリ層:** Container Apps (Spoke1) 上の Node.js アプリにバグコードを埋め込み済み。コメントを外して再デプロイすることで、例外多発やパフォーマンス劣化を再現
+- **DB 層:** Azure SQL Database (Spoke1) + Private Endpoint。アプリ側の N+1 クエリバグにより DTU 枯渇・デッドロックを再現
+- **インフラ層:** VM (OnPrem/Hub) + Azure Firewall + VPN で NW レベルの障害を再現
 - **Spoke 間テスト:** Spoke2 の VM から Spoke1 の Container Apps / SQL への通信で、NW 経路（FW 経由）の障害を再現
 
 ## デモシナリオ
 
 | # | 観点 | 対象リソース | 想定障害シナリオ例 |
 |---|------|------------|------------------|
-| 1 | インフラ | VM (OnPrem/Hub), Azure FW, VPN | CPU 高負荷、ディスク枯渇、FW ルール誤設定、VPN 断、NSG ブロック |
-| 2 | アプリ | Container Apps, App Insights, GitHub Actions | コンテナクラッシュ、イメージ Pull 失敗、ヘルスチェック失敗、デプロイ失敗、レスポンス遅延 |
-| 3 | DB | Azure SQL Database | DTU 枯渇、デッドロック、FW で接続拒否、長時間クエリ、接続文字列誤り |
-| 4 | Spoke 間 | Spoke2 VM → Spoke1 PaaS | FW ルール変更による通信断、UDR 誤設定、DNS 解決失敗、Private Endpoint 障害 |
+| 1 | アプリ | Container Apps, App Insights | コードバグによる例外多発、デプロイ起因のリグレッション |
+| 2 | DB | Azure SQL Database, App Insights | N+1 クエリによる DTU 枯渇、デッドロック |
+| 3 | NW | Azure FW, UDR, VPN | FW ルール誤設定、VPN 断、NSG ブロック |
+| 4 | インフラ | VM | CPU 高負荷、ディスク枯渇、メモリ不足 |
 
 ---
 
@@ -240,7 +240,7 @@ SreAgentDemos/
 │   ├── .dockerignore                   # Docker ビルド除外設定
 │   ├── package.json                    # Node.js 依存 (express, mssql, applicationinsights)
 │   └── src/
-│       └── server.js                   # REST API + カオスエンジニアリング用エンドポイント
+│       └── server.js                   # REST API（バグシナリオ埋め込み済み）
 └── .github/
     └── workflows/
         └── deploy.yml                  # GitHub Actions CI/CD ワークフロー（OIDC 認証）

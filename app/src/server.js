@@ -85,20 +85,70 @@ app.get('/ready', async (_req, res) => {
     await p.request().query('SELECT 1');
     res.json({ status: 'ready', db: 'connected' });
   } catch (err) {
-    res.status(503).json({ status: 'not ready', db: err.message });
+    console.error('/ready check failed:', err);
+    res.status(503).json({ status: 'not ready', db: 'connection failed' });
   }
 });
 
 // ---------------------------------------------------------------------------
 // CRUD - /api/items
 // ---------------------------------------------------------------------------
+
+// ===========================================================================
+// BUG SCENARIO A: アプリケーションバグ（例外）
+// コメントを外すとデプロイ後に全 GET /api/items で例外が発生します。
+// アラート: app-exceptions, app-failed-requests
+// 調査ポイント: App Insights のスタックトレース、デプロイタイミングとの相関
+// ---------------------------------------------------------------------------
+// app.get('/api/items', (_req, _res) => {
+//   // 開発者の意図しない undefined 参照（レビュー漏れを想定）
+//   const config = undefined;
+//   const items = config.getItems();  // TypeError: Cannot read properties of undefined
+//   _res.json(items);
+// });
+// ===========================================================================
+
+// ===========================================================================
+// BUG SCENARIO B: データベースパフォーマンス劣化
+// コメントを外すと N+1 クエリ + 重負荷集計が発生し DTU が枯渇します。
+// アラート: sql-dtu-high, sql-deadlock
+// 調査ポイント: SQL メトリクス急増、App Insights 依存関係テレメトリ
+// ---------------------------------------------------------------------------
+// app.get('/api/items', async (req, res) => {
+//   try {
+//     const p = await getPool();
+//     // N+1 クエリ: 全件取得後に1件ずつ再取得（非効率パターン）
+//     const { recordset: ids } = await p.request().query('SELECT Id FROM Items');
+//     const items = [];
+//     for (const row of ids) {
+//       const detail = await p.request().query(
+//         `SELECT * FROM Items WITH (HOLDLOCK) WHERE Id = ${row.Id};
+//          WAITFOR DELAY '00:00:01';`
+//       );
+//       items.push(detail.recordset[0]);
+//     }
+//     // 追加の重負荷集計クエリ
+//     await p.request().query(`
+//       DECLARE @i INT = 0;
+//       WHILE @i < 500000 BEGIN SET @i = @i + 1; END;
+//       SELECT COUNT(*) AS total FROM Items CROSS JOIN Items AS t2;
+//     `);
+//     res.json(items);
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+// ===========================================================================
+
+// 正常版（バグシナリオ使用時はこの関数をコメントアウトしてください）
 app.get('/api/items', async (_req, res) => {
   try {
     const p = await getPool();
     const result = await p.request().query('SELECT * FROM Items ORDER BY CreatedAt DESC');
     res.json(result.recordset);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('GET /api/items error:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -113,7 +163,8 @@ app.post('/api/items', async (req, res) => {
       .query('INSERT INTO Items (Name) OUTPUT INSERTED.* VALUES (@name)');
     res.status(201).json(result.recordset[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('POST /api/items error:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -126,7 +177,8 @@ app.delete('/api/items/:id', async (req, res) => {
       .query('DELETE FROM Items WHERE Id = @id');
     res.status(204).end();
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('DELETE /api/items error:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
