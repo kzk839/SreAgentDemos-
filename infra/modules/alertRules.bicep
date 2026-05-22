@@ -264,12 +264,12 @@ resource alertSqlConnFail 'Microsoft.Insights/metricAlerts@2018-03-01' = {
 // Application Alerts (App Insights Metric Alerts)
 // ============================================================
 
-// Response Time > 5 seconds
-resource alertAppResponseTime 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+// Response Time > 5 seconds (log-based alert to exclude health probes)
+resource alertAppResponseTime 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
   name: '${prefix}-alert-app-slow-response'
-  location: 'global'
+  location: location
   properties: {
-    description: 'Fires when average server response time exceeds 5 seconds'
+    description: 'Fires when average server response time exceeds 5 seconds (excluding health probes)'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT1M'
@@ -278,24 +278,31 @@ resource alertAppResponseTime 'Microsoft.Insights/metricAlerts@2018-03-01' = {
       appInsightsId
     ]
     criteria: {
-      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
       allOf: [
         {
-          name: 'SlowResponse'
-          metricName: 'requests/duration'
-          metricNamespace: 'microsoft.insights/components'
+          query: '''
+            requests
+            | where name !in ("GET /health", "GET /ready")
+            | where url !has "/health" and url !has "/ready"
+            | summarize avgDuration = avg(duration) by bin(timestamp, 5m)
+            | where avgDuration > 5000
+          '''
+          timeAggregation: 'Count'
           operator: 'GreaterThan'
-          threshold: 5000
-          timeAggregation: 'Average'
-          criterionType: 'StaticThresholdCriterion'
+          threshold: 0
+          metricMeasureColumn: null
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
         }
       ]
     }
-    actions: [
-      {
-        actionGroupId: actionGroupId
-      }
-    ]
+    actions: {
+      actionGroups: [
+        actionGroupId
+      ]
+    }
   }
 }
 
