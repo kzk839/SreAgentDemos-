@@ -66,6 +66,21 @@ async function initDb() {
         CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
       )
     `);
+
+    // シードデータ: アイテムが 10 件未満なら 30 件のサンプルデータを投入
+    const { recordset } = await p.request().query('SELECT COUNT(*) AS cnt FROM Items');
+    if (recordset[0].cnt < 10) {
+      const names = ['web-frontend', 'api-gateway', 'auth-service', 'user-service', 'order-service',
+        'payment-service', 'notification-service', 'search-service', 'analytics-service', 'cache-layer',
+        'queue-worker', 'scheduler', 'config-server', 'log-aggregator', 'health-monitor',
+        'cdn-proxy', 'file-storage', 'email-sender', 'sms-gateway', 'rate-limiter',
+        'session-manager', 'feature-flags', 'ab-testing', 'recommendation-engine', 'data-pipeline',
+        'etl-worker', 'backup-agent', 'disaster-recovery', 'load-balancer', 'service-mesh'];
+      const values = names.map((n) => `('${n}', 'active')`).join(',');
+      await p.request().query(`INSERT INTO Items (Name, Status) VALUES ${values}`);
+      console.log(`Seeded ${names.length} sample items`);
+    }
+
     console.log('Database initialised');
   } catch (err) {
     console.error('Database initialisation skipped:', err.message);
