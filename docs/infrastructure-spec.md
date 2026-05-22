@@ -448,6 +448,14 @@ while ($true) {
   try { Invoke-RestMethod -Uri "https://<FQDN>/" -TimeoutSec 30 } catch {}
   Start-Sleep -Seconds 3
 }
+
+# DB 負荷ループ（シナリオ3用、30秒ごとに重負荷クエリを再実行）
+while ($true) {
+  try {
+    Invoke-RestMethod -Uri "https://<FQDN>/chaos/db-load" -Method POST -ContentType "application/json" -Body '{"iterations": 100}' -TimeoutSec 120
+  } catch {}
+  Start-Sleep -Seconds 30
+}
 ```
 
 ### アラートとカオスの対応表
