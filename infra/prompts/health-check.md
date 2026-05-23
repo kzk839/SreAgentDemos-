@@ -9,7 +9,7 @@
 - 平均レスポンスタイム: 前日との比較
 - レプリカ数と正常性
 
-## 仮想マシン (sre-demo-vm-onprem, sre-demo-vm-hub, sre-demo-vm-spoke2)
+## 仮想マシン (sre-demo-vm-hub, sre-demo-vm-spoke2)
 - ハートビート: 過去 24 時間に欠落がないか
 - CPU 使用率: 80% 以上が持続していないか
 - 利用可能メモリ: 1GB を下回っていないか
@@ -22,7 +22,6 @@
 - 長時間クエリ（5 秒超）の有無
 
 ## ネットワーク
-- VPN Gateway の接続状態（双方向）
 - Azure Firewall の正常性
 - Firewall ログで予期しない拒否トラフィックがないか
 
