@@ -67,18 +67,19 @@ async function initDb() {
       )
     `);
 
-    // シードデータ: アイテムが 10 件未満なら 30 件のサンプルデータを投入
+    // シードデータ: アイテムが 100 件未満なら 10,000 件のサンプルデータを投入
     const { recordset } = await p.request().query('SELECT COUNT(*) AS cnt FROM Items');
-    if (recordset[0].cnt < 10) {
-      const names = ['web-frontend', 'api-gateway', 'auth-service', 'user-service', 'order-service',
-        'payment-service', 'notification-service', 'search-service', 'analytics-service', 'cache-layer',
-        'queue-worker', 'scheduler', 'config-server', 'log-aggregator', 'health-monitor',
-        'cdn-proxy', 'file-storage', 'email-sender', 'sms-gateway', 'rate-limiter',
-        'session-manager', 'feature-flags', 'ab-testing', 'recommendation-engine', 'data-pipeline',
-        'etl-worker', 'backup-agent', 'disaster-recovery', 'load-balancer', 'service-mesh'];
-      const values = names.map((n) => `('${n}', 'active')`).join(',');
-      await p.request().query(`INSERT INTO Items (Name, Status) VALUES ${values}`);
-      console.log(`Seeded ${names.length} sample items`);
+    if (recordset[0].cnt < 100) {
+      // バッチ INSERT（1,000 件 × 10 バッチ）
+      for (let batch = 0; batch < 10; batch++) {
+        const values = [];
+        for (let i = 0; i < 1000; i++) {
+          const idx = batch * 1000 + i;
+          values.push(`('item-${idx}', 'active', DATEADD(SECOND, -${idx}, SYSUTCDATETIME()))`);
+        }
+        await p.request().query(`INSERT INTO Items (Name, Status, CreatedAt) VALUES ${values.join(',')}`);
+      }
+      console.log('Seeded 10,000 sample items');
     }
 
     console.log('Database initialised');
@@ -154,7 +155,7 @@ app.get('/ready', async (_req, res) => {
 app.get('/api/items', async (_req, res) => {
   try {
     const p = await getPool();
-    const result = await p.request().query('SELECT * FROM Items ORDER BY CreatedAt DESC');
+    const result = await p.request().query('SELECT TOP 50 * FROM Items ORDER BY CreatedAt DESC');
     res.json(result.recordset);
   } catch (err) {
     console.error('GET /api/items error:', err);
