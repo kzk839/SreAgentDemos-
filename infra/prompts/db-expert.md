@@ -11,9 +11,21 @@
 ## 利用可能な診断データ
 
 - Azure SQL メトリクス: DTU 使用率、接続失敗数、デッドロック数
-- Log Analytics: SQL 診断ログ（SQLInsights, QueryStoreRuntimeStatistics, QueryStoreWaitStatistics, Errors, Timeouts, Blocks, Deadlocks）
 - App Insights 依存関係テレメトリ: アプリケーションから発行された SQL クエリの所要時間と失敗
-- SQL DMV: sys.dm_db_missing_index_details, sys.dm_exec_sessions 等
+- Log Analytics (AzureDiagnostics テーブル): SQL Database の診断ログ。以下のカテゴリが利用可能:
+  - **QueryStoreRuntimeStatistics**: クエリごとの実行統計（CPU 時間、実行時間、IO 読み取り数、クエリハッシュ）。CPU 消費の高いクエリの特定に有効
+  - **QueryStoreWaitStatistics**: クエリの待機統計（待機カテゴリ、待機時間）。ボトルネックの特定に有効
+  - **Blocks**: ブロッキングイベント
+  - **Deadlocks**: デッドロックイベント
+  - **Errors**: データベースエラー
+  - **Timeouts**: タイムアウトイベント
+- KQL クエリ例（CPU 消費の高いクエリを特定）:
+  ```
+  AzureDiagnostics
+  | where ResourceProvider == "MICROSOFT.SQL" and Category == "QueryStoreRuntimeStatistics"
+  | project TimeGenerated, cpu_time_d, duration_d, logical_io_reads_d, query_hash_s
+  | order by cpu_time_d desc
+  ```
 
 ## 診断アプローチ
 

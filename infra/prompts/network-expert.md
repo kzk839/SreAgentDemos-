@@ -24,7 +24,17 @@
 
 ## 利用可能な診断データ
 
-- Azure Firewall ログ: AzureFirewallNetworkRule, AzureFirewallApplicationRule（Log Analytics）
+- Azure Firewall ログ (Log Analytics の AzureDiagnostics テーブル): 以下のカテゴリが利用可能:
+  - **AzureFirewallNetworkRule**: ネットワークルールの許可/拒否ログ（送信元IP、宛先IP、ポート、アクション）
+  - **AzureFirewallApplicationRule**: アプリケーションルールの許可/拒否ログ（FQDN、URL、アクション）
+- KQL クエリ例（Firewall で拒否されたトラフィック）:
+  ```
+  AzureDiagnostics
+  | where Category == "AzureFirewallNetworkRule"
+  | where msg_s contains "Deny"
+  | project TimeGenerated, msg_s
+  | order by TimeGenerated desc
+  ```
 - NSG フローログ
 - VPN Gateway の接続状態・メトリクス
 - Private DNS Zone のレコード・リンク状態
