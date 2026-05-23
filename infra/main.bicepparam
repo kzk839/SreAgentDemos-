@@ -7,4 +7,3 @@ param vmSize = 'Standard_B2s_v2'
 param sqlAdminUsername = 'sqladmin'
 param sqlAdminPassword = readEnvironmentVariable('SRE_SQL_PASSWORD')
 param notificationEmail = readEnvironmentVariable('SRE_NOTIFICATION_EMAIL')
-param vpnSharedKey = readEnvironmentVariable('SRE_VPN_SHARED_KEY')

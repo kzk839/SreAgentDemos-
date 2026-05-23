@@ -48,7 +48,7 @@ Write-Host " SRE Agent Demo - Deploy" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # --- 環境変数チェック ---
-$requiredEnvVars = @("SRE_ADMIN_PASSWORD", "SRE_SQL_PASSWORD", "SRE_NOTIFICATION_EMAIL", "SRE_VPN_SHARED_KEY")
+$requiredEnvVars = @("SRE_ADMIN_PASSWORD", "SRE_SQL_PASSWORD", "SRE_NOTIFICATION_EMAIL")
 foreach ($var in $requiredEnvVars) {
     if (-not [Environment]::GetEnvironmentVariable($var)) {
         Write-Error "環境変数 '$var' が設定されていません。"
@@ -225,7 +225,6 @@ Write-Host "  Container App:  https://$($deployResult.containerAppFqdn.value)" -
 Write-Host "  ACR:            $acrLoginServer" -ForegroundColor White
 Write-Host "  SQL Server:     $($deployResult.sqlServerFqdn.value)" -ForegroundColor White
 Write-Host "  Log Analytics:  $($deployResult.logAnalyticsWorkspaceName.value)" -ForegroundColor White
-Write-Host "  VM OnPrem:      $($deployResult.vmOnpremPrivateIp.value)" -ForegroundColor White
 Write-Host "  VM Hub:         $($deployResult.vmHubPrivateIp.value)" -ForegroundColor White
 Write-Host "  VM Spoke2:      $($deployResult.vmSpoke2PrivateIp.value)" -ForegroundColor White
 Write-Host ""

@@ -2,8 +2,7 @@
 // SRE Agent Demo - Hub-Spoke Infrastructure (PaaS edition)
 // ============================================================
 // Topology:
-//   OnPrem VNet (10.0.0.0/16) --[VPN GW]--> Hub VNet (10.1.0.0/16)
-//   Hub VNet --[Peering]--> Spoke1 VNet (10.2.0.0/16)  Container Apps + ACR + SQL (PaaS)
+//   Hub VNet (10.1.0.0/16) --[Peering]--> Spoke1 VNet (10.2.0.0/16)  Container Apps + ACR + SQL (PaaS)
 //   Hub VNet --[Peering]--> Spoke2 VNet (10.3.0.0/16)  VM (Spoke 間テスト用)
 //   All cross-VNet traffic routed through Azure Firewall
 // ============================================================
@@ -39,19 +38,13 @@ param sqlAdminPassword string
 @description('Email address for alert notifications')
 param notificationEmail string
 
-@secure()
-@description('VPN Gateway shared key')
-param vpnSharedKey string
-
 // ============================================================
 // Variables
 // ============================================================
-var onpremPrefix = '10.0.0.0/16'
 var hubPrefix = '10.1.0.0/16'
 var spoke1Prefix = '10.2.0.0/16'
 var spoke2Prefix = '10.3.0.0/16'
 var allPrefixes = [
-  onpremPrefix
   hubPrefix
   spoke1Prefix
   spoke2Prefix
@@ -233,26 +226,10 @@ resource nsgPrivateEndpoints 'Microsoft.Network/networkSecurityGroups@2024-01-01
 }
 
 // ============================================================
-// VNets - OnPrem & Hub (created first, FW/RT not yet needed)
+// VNets - Hub
 // ============================================================
 
-// OnPrem VNet: GatewaySubnet + default subnet
-module vnetOnprem 'modules/vnet.bicep' = {
-  name: 'deploy-vnet-onprem'
-  params: {
-    name: '${prefix}-vnet-onprem'
-    location: location
-    addressPrefix: onpremPrefix
-    subnets: [
-      { name: 'GatewaySubnet', addressPrefix: '10.0.0.0/27' }
-      { name: 'sn-default', addressPrefix: '10.0.1.0/24', nsgId: nsgDefault.id }
-    ]
-  }
-}
-
-// Hub VNet: AzureFirewallSubnet + default subnet + GatewaySubnet
-// Note: GatewaySubnet is included here for idempotency. Its route table is applied
-// separately via a child resource after the Azure Firewall and RT are created.
+// Hub VNet: AzureFirewallSubnet + default subnet
 module vnetHub 'modules/vnet.bicep' = {
   name: 'deploy-vnet-hub'
   params: {
@@ -262,7 +239,6 @@ module vnetHub 'modules/vnet.bicep' = {
     subnets: [
       { name: 'AzureFirewallSubnet', addressPrefix: '10.1.1.0/26' }
       { name: 'sn-default', addressPrefix: '10.1.2.0/24', nsgId: nsgDefault.id }
-      { name: 'GatewaySubnet', addressPrefix: '10.1.0.0/27' }
     ]
   }
 }
@@ -291,14 +267,6 @@ resource rtSpoke1 'Microsoft.Network/routeTables@2024-01-01' = {
   properties: {
     disableBgpRoutePropagation: true
     routes: [
-      {
-        name: 'to-onprem'
-        properties: {
-          addressPrefix: onpremPrefix
-          nextHopType: 'VirtualAppliance'
-          nextHopIpAddress: azureFirewall.outputs.privateIp
-        }
-      }
       {
         name: 'to-hub'
         properties: {
@@ -335,14 +303,6 @@ resource rtSpoke2 'Microsoft.Network/routeTables@2024-01-01' = {
         }
       }
       {
-        name: 'to-onprem'
-        properties: {
-          addressPrefix: onpremPrefix
-          nextHopType: 'VirtualAppliance'
-          nextHopIpAddress: azureFirewall.outputs.privateIp
-        }
-      }
-      {
         name: 'to-hub'
         properties: {
           addressPrefix: hubPrefix
@@ -362,39 +322,12 @@ resource rtSpoke2 'Microsoft.Network/routeTables@2024-01-01' = {
   }
 }
 
-// Hub GW: route spoke traffic through FW (for OnPrem → Spoke)
-resource rtHubGw 'Microsoft.Network/routeTables@2024-01-01' = {
-  name: '${prefix}-rt-hub-gw'
-  location: location
-  properties: {
-    disableBgpRoutePropagation: false
-    routes: [
-      {
-        name: 'to-spoke1'
-        properties: {
-          addressPrefix: spoke1Prefix
-          nextHopType: 'VirtualAppliance'
-          nextHopIpAddress: azureFirewall.outputs.privateIp
-        }
-      }
-      {
-        name: 'to-spoke2'
-        properties: {
-          addressPrefix: spoke2Prefix
-          nextHopType: 'VirtualAppliance'
-          nextHopIpAddress: azureFirewall.outputs.privateIp
-        }
-      }
-    ]
-  }
-}
-
 // Hub default: route spoke traffic through FW (for Hub VM → Spoke)
 resource rtHubDefault 'Microsoft.Network/routeTables@2024-01-01' = {
   name: '${prefix}-rt-hub-default'
   location: location
   properties: {
-    disableBgpRoutePropagation: false // VPN GW からの OnPrem ルートを受信するため有効
+    disableBgpRoutePropagation: true
     routes: [
       {
         name: 'to-spoke1'
@@ -464,21 +397,10 @@ module vnetSpoke2 'modules/vnet.bicep' = {
 }
 
 // ============================================================
-// Hub subnets updated after FW/RT ready
+// Hub subnet updated after FW/RT ready
 // ============================================================
-resource hubGatewaySubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
-  name: '${prefix}-vnet-hub/GatewaySubnet'
-  properties: {
-    addressPrefix: '10.1.0.0/27'
-    routeTable: {
-      id: rtHubGw.id
-    }
-  }
-}
-
 resource hubDefaultSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
   name: '${prefix}-vnet-hub/sn-default'
-  dependsOn: [hubGatewaySubnet] // serialize subnet updates to avoid conflict
   properties: {
     addressPrefix: '10.1.2.0/24'
     networkSecurityGroup: {
@@ -498,7 +420,6 @@ module dnsZoneAcr 'modules/privateDnsZone.bicep' = {
   params: {
     zoneName: 'privatelink.azurecr.io'
     vnetLinks: [
-      { name: 'link-onprem', vnetId: vnetOnprem.outputs.id }
       { name: 'link-hub', vnetId: vnetHub.outputs.id }
       { name: 'link-spoke1', vnetId: vnetSpoke1.outputs.id }
       { name: 'link-spoke2', vnetId: vnetSpoke2.outputs.id }
@@ -511,7 +432,6 @@ module dnsZoneSql 'modules/privateDnsZone.bicep' = {
   params: {
     zoneName: 'privatelink${environment().suffixes.sqlServerHostname}'
     vnetLinks: [
-      { name: 'link-onprem', vnetId: vnetOnprem.outputs.id }
       { name: 'link-hub', vnetId: vnetHub.outputs.id }
       { name: 'link-spoke1', vnetId: vnetSpoke1.outputs.id }
       { name: 'link-spoke2', vnetId: vnetSpoke2.outputs.id }
@@ -607,7 +527,6 @@ module dnsZoneCae 'modules/privateDnsZone.bicep' = {
   params: {
     zoneName: containerApps.outputs.defaultDomain
     vnetLinks: [
-      { name: 'link-onprem', vnetId: vnetOnprem.outputs.id }
       { name: 'link-hub', vnetId: vnetHub.outputs.id }
       { name: 'link-spoke1', vnetId: vnetSpoke1.outputs.id }
       { name: 'link-spoke2', vnetId: vnetSpoke2.outputs.id }
@@ -619,66 +538,7 @@ module dnsZoneCae 'modules/privateDnsZone.bicep' = {
 }
 
 // ============================================================
-// VPN Gateways (~30-45 min each, sequential to avoid contention)
-// ============================================================
-module vpnGwOnprem 'modules/vpnGateway.bicep' = {
-  name: 'deploy-vpngw-onprem'
-  params: {
-    name: '${prefix}-vpngw-onprem'
-    location: location
-    gatewaySubnetId: vnetOnprem.outputs.subnets[0].id // GatewaySubnet
-  }
-}
-
-module vpnGwHub 'modules/vpnGateway.bicep' = {
-  name: 'deploy-vpngw-hub'
-  dependsOn: [vpnGwOnprem] // Sequential: avoid parallel VPN GW deployment failures
-  params: {
-    name: '${prefix}-vpngw-hub'
-    location: location
-    gatewaySubnetId: hubGatewaySubnet.id
-  }
-}
-
-// ============================================================
-// VPN Connections (VNet-to-VNet, bidirectional)
-// ============================================================
-resource connOnpremToHub 'Microsoft.Network/connections@2024-01-01' = {
-  name: '${prefix}-conn-onprem-to-hub'
-  location: location
-  properties: {
-    connectionType: 'Vnet2Vnet'
-    sharedKey: vpnSharedKey
-    virtualNetworkGateway1: {
-      id: vpnGwOnprem.outputs.id
-      properties: {}
-    }
-    virtualNetworkGateway2: {
-      id: vpnGwHub.outputs.id
-      properties: {}
-    }
-  }
-}
-
-resource connHubToOnprem 'Microsoft.Network/connections@2024-01-01' = {
-  name: '${prefix}-conn-hub-to-onprem'
-  location: location
-  properties: {
-    connectionType: 'Vnet2Vnet'
-    sharedKey: vpnSharedKey
-    virtualNetworkGateway1: {
-      id: vpnGwHub.outputs.id
-      properties: {}
-    }
-    virtualNetworkGateway2: {
-      id: vpnGwOnprem.outputs.id
-      properties: {}
-    }
-  }
-}
-
-// ============================================================
-// VNet Peerings (Hub <-> Spokes, with gateway transit)
+// VNet Peerings (Hub <-> Spokes)
 // ============================================================
 
 // Hub -> Spoke1
@@ -690,11 +550,7 @@ resource peerHubToSpoke1 'Microsoft.Network/virtualNetworks/virtualNetworkPeerin
     }
     allowVirtualNetworkAccess: true
     allowForwardedTraffic: true
-    allowGatewayTransit: true
   }
-  dependsOn: [
-    vpnGwHub
-  ]
 }
 
 // Spoke1 -> Hub
@@ -706,10 +562,8 @@ resource peerSpoke1ToHub 'Microsoft.Network/virtualNetworks/virtualNetworkPeerin
     }
     allowVirtualNetworkAccess: true
     allowForwardedTraffic: true
-    useRemoteGateways: true
   }
   dependsOn: [
-    vpnGwHub
     peerHubToSpoke1
   ]
 }
@@ -723,10 +577,8 @@ resource peerHubToSpoke2 'Microsoft.Network/virtualNetworks/virtualNetworkPeerin
     }
     allowVirtualNetworkAccess: true
     allowForwardedTraffic: true
-    allowGatewayTransit: true
   }
   dependsOn: [
-    vpnGwHub
     peerHubToSpoke1
   ]
 }
@@ -740,30 +592,15 @@ resource peerSpoke2ToHub 'Microsoft.Network/virtualNetworks/virtualNetworkPeerin
     }
     allowVirtualNetworkAccess: true
     allowForwardedTraffic: true
-    useRemoteGateways: true
   }
   dependsOn: [
-    vpnGwHub
     peerHubToSpoke2
   ]
 }
 
 // ============================================================
-// Azure Bastion (Developer SKU — 各 VNet に 1 つずつ配置)
+// Azure Bastion (Developer SKU)
 // ============================================================
-resource bastionOnprem 'Microsoft.Network/bastionHosts@2024-01-01' = {
-  name: '${prefix}-bastion-onprem'
-  location: location
-  sku: {
-    name: 'Developer'
-  }
-  properties: {
-    virtualNetwork: {
-      id: vnetOnprem.outputs.id
-    }
-  }
-}
-
 resource bastionHub 'Microsoft.Network/bastionHosts@2024-01-01' = {
   name: '${prefix}-bastion-hub'
   location: location
@@ -791,22 +628,8 @@ resource bastionSpoke2 'Microsoft.Network/bastionHosts@2024-01-01' = {
 }
 
 // ============================================================
-// VMs (OnPrem, Hub, Spoke2 - with Azure Monitor Agent + DCR)
+// VMs (Hub, Spoke2 - with Azure Monitor Agent + DCR)
 // ============================================================
-module vmOnprem 'modules/vm.bicep' = {
-  name: 'deploy-vm-onprem'
-  params: {
-    name: '${prefix}-vm-onprem'
-    location: location
-    subnetId: vnetOnprem.outputs.subnets[1].id // sn-default
-    adminUsername: adminUsername
-    adminPassword: adminPassword
-    vmSize: vmSize
-    logAnalyticsWorkspaceId: logAnalytics.id
-    dcrId: dcr.id
-  }
-}
-
 module vmHub 'modules/vm.bicep' = {
   name: 'deploy-vm-hub'
   params: {
@@ -870,6 +693,5 @@ output acrLoginServer string = containerRegistry.outputs.loginServer
 output sqlServerFqdn string = sqlDatabase.outputs.serverFqdn
 output containerAppFqdn string = containerApps.outputs.appFqdn
 output containerAppStaticIp string = containerApps.outputs.staticIp
-output vmOnpremPrivateIp string = vmOnprem.outputs.privateIp
 output vmHubPrivateIp string = vmHub.outputs.privateIp
 output vmSpoke2PrivateIp string = vmSpoke2.outputs.privateIp
