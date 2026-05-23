@@ -2,7 +2,7 @@
 
 ## 概要
 
-Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container Apps (Spoke1) 上の Node.js アプリが Azure SQL Database に接続し、VM (OnPrem/Hub/Spoke2) から Azure Firewall・VPN 経由でアクセスする構成。
+Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container Apps (Spoke1) 上の Node.js アプリが Azure SQL Database に接続し、VM (Hub/Spoke2) から Azure Firewall 経由でアクセスする構成。
 
 ---
 
@@ -11,53 +11,52 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 ```
   GitHub Repo ──► GitHub Actions ──► ACR ──► Container Apps (Spoke1)
 
-┌─────────────────┐         VPN GW          ┌───────────────────┐
-│  OnPrem VNet    │◄──────(VNet-to-VNet)────►│    Hub VNet       │
-│  10.0.0.0/16    │                          │   10.1.0.0/16     │
-│                 │                          │                   │
-│  ┌───────────┐  │                          │  ┌─────────────┐  │
-│  │ VM-OnPrem │  │                          │  │   VM-Hub    │  │
-│  └───────────┘  │                          │  └─────────────┘  │
-└─────────────────┘                          │  ┌─────────────┐  │
-                                             │  │  Azure FW   │  │
-                                             │  └──────┬──────┘  │
-                                             └─────────┼─────────┘
-                                                       │
-                                           ┌───────────┴───────────┐
-                                      VNet Peering            VNet Peering
-                                           │                       │
-                              ┌────────────┴──────────┐   ┌───────┴─────────┐
-                              │  Spoke1 VNet (PaaS)   │   │  Spoke2 VNet    │
-                              │  10.2.0.0/16          │   │  10.3.0.0/16    │
-                              │                       │   │                 │
-                              │  ┌─────────────────┐  │   │  ┌───────────┐  │
-                              │  │ Container Apps  │  │   │  │ VM-Spoke2 │  │
-                              │  │ Environment     │  │   │  └───────────┘  │
-                              │  └─────────────────┘  │   └─────────────────┘
-                              │  ┌─────────────────┐  │
-                              │  │ ACR Private EP  │  │
-                              │  └─────────────────┘  │
-                              │  ┌─────────────────┐  │
-                              │  │ SQL Private EP  │  │
-                              │  └─────────────────┘  │
-                              │  ┌─────────────────┐  │
-                              │  │ Private DNS     │  │
-                              │  └─────────────────┘  │
-                              └───────────────────────┘
+┌───────────────────┐
+│    Hub VNet          │
+│   10.1.0.0/16       │
+│                     │
+│  ┌─────────────┐  │
+│  │   VM-Hub     │  │
+│  └─────────────┘  │
+│  ┌─────────────┐  │
+│  │  Azure FW   │  │
+│  └──────┬──────┘  │
+└─────────┼─────────┘
+           │
+┌───────────┴───────────┐
+ VNet Peering            VNet Peering
+      │                       │
+┌────────────┴──────────┐   ┌───────┴─────────┐
+│  Spoke1 VNet (PaaS)   │   │  Spoke2 VNet    │
+│  10.2.0.0/16          │   │  10.3.0.0/16    │
+│                       │   │                 │
+│  ┌─────────────────┐  │   │  ┌───────────┐  │
+│  │ Container Apps  │  │   │  │ VM-Spoke2 │  │
+│  │ Environment     │  │   │  └───────────┘  │
+│  └─────────────────┘  │   └─────────────────┘
+│  ┌─────────────────┐  │
+│  │ ACR Private EP  │  │
+│  └─────────────────┘  │
+│  ┌─────────────────┐  │
+│  │ SQL Private EP  │  │
+│  └─────────────────┘  │
+│  ┌─────────────────┐  │
+│  │ Private DNS     │  │
+│  └─────────────────┘  │
+└───────────────────────┘
 ```
 
-**通信フロー:** Spoke 間、OnPrem-Spoke 間の全通信は Azure Firewall を経由（UDR で強制）
+**通信フロー:** Hub-Spoke 間の全通信は Azure Firewall を経由（UDR で強制）
 
 ---
 
 ## IP アドレス設計
 
-| VNet | アドレス空間 | GatewaySubnet | AzureFirewallSubnet | sn-default | sn-container-apps | sn-private-endpoints |
-|------|-------------|---------------|---------------------|--------------------|-----------|--------------------|---------------------|
-| OnPrem | 10.0.0.0/16 | 10.0.0.0/27 | — | 10.0.1.0/24 | — | — |
-| Hub | 10.1.0.0/16 | 10.1.0.0/27 | 10.1.1.0/26 | — | 10.1.2.0/24 | — | — |
-| Spoke1 | 10.2.0.0/16 | — | — | — | 10.2.0.0/23 | 10.2.2.0/24 |
-| Spoke2 | 10.3.0.0/16 | — | — | 10.3.1.0/24 | — | — |
+| VNet | アドレス空間 | AzureFirewallSubnet | sn-default | sn-container-apps | sn-private-endpoints |
+|------|-------------|---------------------|------------|-------------------|---------------------|
+| Hub | 10.1.0.0/16 | 10.1.1.0/26 | 10.1.2.0/24 | — | — |
+| Spoke1 | 10.2.0.0/16 | — | — | 10.2.0.0/23 | 10.2.2.0/24 |
+| Spoke2 | 10.3.0.0/16 | — | 10.3.1.0/24 | — | — |
 
 > **Note:** Container Apps Environment には最低 /23 のサブネットが必要
 
@@ -69,19 +68,16 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 
 | リソース | 名前 | 説明 |
 |---------|------|------|
-| VNet × 4 | `{prefix}-vnet-onprem`, `hub`, `spoke1`, `spoke2` | 上記 IP 設計に基づく |
+| VNet × 3 | `{prefix}-vnet-hub`, `spoke1`, `spoke2` | 上記 IP 設計に基づく |
 | NSG (VM 用) | `{prefix}-nsg-default` | VM サブネット共通。RDP (10.0.0.0/8 → 3389) と ICMP を許可 |
 | NSG (PE 用) | `{prefix}-nsg-private-endpoints` | Spoke1 sn-private-endpoints 用。HTTPS (443) と SQL (1433) のみ内部から許可、他全拒否 |
 | Azure Firewall | `{prefix}-afw` | Hub VNet に配置。Standard SKU |
 | Firewall Policy | `{prefix}-afw-policy` | 内部通信全許可 + HTTP/HTTPS/DNS のアウトバウンド許可 |
-| Route Table (Spoke1) | `{prefix}-rt-spoke1` | OnPrem, Hub, Spoke2 → FW へ転送（0.0.0.0/0 なし: Container Apps の Azure サービス通信を維持） |
-| Route Table (Spoke2) | `{prefix}-rt-spoke2` | 0.0.0.0/0, OnPrem, Hub, Spoke1 → FW へ転送 |
-| Route Table (Hub GW) | `{prefix}-rt-hub-gw` | Spoke1, Spoke2 → FW へ転送（OnPrem→Spoke 通信を FW 経由に強制） |
-| Route Table (Hub Default) | `{prefix}-rt-hub-default` | Spoke1, Spoke2 → FW へ転送（Hub VM→Spoke 通信を FW 経由に強制）。BGP 伝播有効（VPN GW の OnPrem ルートを受信） |
-| VPN Gateway × 2 | `{prefix}-vpngw-onprem`, `vpngw-hub` | VpnGw1AZ SKU, RouteBased, BGP 無効 |
-| VPN Connection × 2 | `{prefix}-conn-onprem-to-hub`, `conn-hub-to-onprem` | VNet-to-VNet 接続（双方向） |
-| VNet Peering × 4 | `peer-to-spoke1/2`, `peer-to-hub` | Hub 側: allowGatewayTransit=true, Spoke 側: useRemoteGateways=true |
-| Azure Bastion × 3 | `{prefix}-bastion-onprem`, `bastion-hub`, `bastion-spoke2` | Developer SKU（無料）。各 VNet に 1 つずつ配置。同一 VNet 内の VM のみ接続可能 |
+| Route Table (Spoke1) | `{prefix}-rt-spoke1` | Hub, Spoke2 → FW へ転送（0.0.0.0/0 なし: Container Apps の Azure サービス通信を維持） |
+| Route Table (Spoke2) | `{prefix}-rt-spoke2` | 0.0.0.0/0, Hub, Spoke1 → FW へ転送 |
+| Route Table (Hub Default) | `{prefix}-rt-hub-default` | Spoke1, Spoke2 → FW へ転送（Hub VM→Spoke 通信を FW 経由に強制） |
+| VNet Peering × 4 | `peer-to-spoke1/2`, `peer-to-hub` | Hub-Spoke ピアリング |
+| Azure Bastion × 2 | `{prefix}-bastion-hub`, `bastion-spoke2` | Developer SKU（無料）。同一 VNet 内の VM のみ接続可能 |
 | Private DNS Zone | `privatelink.azurecr.io` | ACR Private Endpoint 用。Hub VNet にリンク |
 | Private DNS Zone | `privatelink.database.windows.net` | Azure SQL Private Endpoint 用。Hub VNet にリンク |
 
@@ -108,10 +104,9 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 
 | リソース | 名前 | 仕様 | VNet |
 |---------|------|------|------|
-| VM | `{prefix}-vm-onprem` | Windows Server 2022, Standard_B2s_v2 | OnPrem sn-default |
 | VM | `{prefix}-vm-hub` | Windows Server 2022, Standard_B2s_v2 | Hub sn-default |
 | VM | `{prefix}-vm-spoke2` | Windows Server 2022, Standard_B2s_v2 | Spoke2 sn-default |
-| NIC × 3 | `{prefix}-vm-*-nic` | プライベート IP 動的割当 | 各 VNet |
+| NIC × 2 | `{prefix}-vm-*-nic` | プライベート IP 動的割当 | 各 VNet |
 
 ### 監視
 
@@ -121,7 +116,7 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 | Application Insights | `{prefix}-appi` | Container App のアプリ監視。Log Analytics に接続 |
 | Data Collection Rule | `{prefix}-dcr-windows` | パフォーマンスカウンター + Windows イベントログ |
 | Azure Monitor Agent | 各 VM に拡張機能として導入 | 自動アップグレード有効 |
-| DCR Association × 3 | 各 VM にスコープ | DCR を各 VM に関連付け |
+| DCR Association × 2 | 各 VM にスコープ | DCR を各 VM に関連付け |
 | Action Group | `{prefix}-ag-sre` | メール通知用アクショングループ |
 | Alert Rule (VM CPU) | `{prefix}-alert-vm-cpu-high` | VM CPU > 90% (5分平均) — Sev2 |
 | Alert Rule (VM Memory) | `{prefix}-alert-vm-memory-low` | 空きメモリ < 500MB — Sev2 |
@@ -156,7 +151,6 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 
 | ルート名 | 宛先 | 次ホップ |
 |----------|------|--------|
-| to-onprem | 10.0.0.0/16 | Azure FW |
 | to-hub | 10.1.0.0/16 | Azure FW |
 | to-spoke2 | 10.3.0.0/16 | Azure FW |
 
@@ -165,20 +159,10 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 | ルート名 | 宛先 | 次ホップ |
 |----------|------|---------|
 | to-internet | 0.0.0.0/0 | Azure FW |
-| to-onprem | 10.0.0.0/16 | Azure FW |
 | to-hub | 10.1.0.0/16 | Azure FW |
 | to-spoke1 | 10.2.0.0/16 | Azure FW |
 
-### Hub GatewaySubnet ルートテーブル (`rt-hub-gw`, BGP 伝播有効)
-
-| ルート名 | 宛先 | 次ホップ |
-|----------|------|---------|
-| to-spoke1 | 10.2.0.0/16 | Azure FW |
-| to-spoke2 | 10.3.0.0/16 | Azure FW |
-### Hub sn-default ルートテーブル (`rt-hub-default`, BGP 伝播有効)
-
-> **Note:** BGP 伝播を有効にし、VPN GW から受信する OnPrem ルート (10.0.0.0/16) を Hub VM に伝播させる。
-> 無効にすると Hub VM → OnPrem VM の通信が断になる。
+### Hub sn-default ルートテーブル (`rt-hub-default`)
 
 | ルート名 | 宛先 | 次ホップ |
 |----------|------|--------|
@@ -215,7 +199,6 @@ SreAgentDemos/
 │       ├── vnet.bicep                  # VNet モジュール（サブネット構成可変）
 │       ├── vm.bicep                    # VM モジュール（AMA + DCR 関連付け込み）
 │       ├── azureFirewall.bicep         # Azure Firewall + Policy + ルール
-│       ├── vpnGateway.bicep            # VPN Gateway
 │       ├── containerApps.bicep         # Container Apps Environment + App
 │       ├── containerRegistry.bicep     # ACR + Private Endpoint
 │       ├── sqlDatabase.bicep           # Azure SQL Server + DB + Private Endpoint
@@ -247,7 +230,6 @@ SreAgentDemos/
 | `sqlAdminUsername` | string | `sqladmin` | Azure SQL 管理者ユーザー名 |
 | `sqlAdminPassword` | secureString | 環境変数 `SRE_SQL_PASSWORD` | Azure SQL 管理者パスワード |
 | `notificationEmail` | string | 環境変数 `SRE_NOTIFICATION_EMAIL` | アラート通知先メールアドレス |
-| `vpnSharedKey` | secureString | 環境変数 `SRE_VPN_SHARED_KEY` | VPN Gateway 共有キー |
 
 ---
 
@@ -263,7 +245,6 @@ $env:SRE_ADMIN_USERNAME = '<VM管理者ユーザー名>'  # 省略時は azuread
 $env:SRE_ADMIN_PASSWORD = '<VMパスワード>'
 $env:SRE_SQL_PASSWORD = '<SQLパスワード>'
 $env:SRE_NOTIFICATION_EMAIL = '<通知先メールアドレス>'
-$env:SRE_VPN_SHARED_KEY = '<VPN共有キー>'
 
 # 2. デプロイ実行（OIDC 設定込み）
 ./scripts/deploy.ps1
@@ -344,7 +325,7 @@ az containerapp update --name sre-demo-app --resource-group rg-sre-demo `
 
 `deploy.ps1` は全ステップが冪等に設計されているため、初回でも再デプロイでも同じコマンドで実行できます。
 
-**所要時間:** VPN Gateway は直列デプロイ（OnPrem → Hub の順）のため各 15〜25 分、全体で約 50〜60 分
+**所要時間:** 約 20〜30 分
 
 ---
 
@@ -354,18 +335,15 @@ az containerapp update --name sre-demo-app --resource-group rg-sre-demo `
 Log Analytics ──► DCR
               ──► App Insights
 
-NSG ──┬──► VNet OnPrem ──► VPN GW OnPrem ──┐
-      │                                     │ (直列: Hub は OnPrem 完了後にデプロイ)
-      └──► VNet Hub ──► Azure FW ──► Route Tables ──┬──► VNet Spoke1 ──┬──► Container Apps Env
+NSG ──► VNet Hub ──► Azure FW ──► Route Tables ──┬──► VNet Spoke1 ──┬──► Container Apps Env
                                                      │                  ├──► ACR + Private EP
                                                      │                  ├──► SQL + Private EP
                                                      │                  └──► Private DNS Zones
-                                                     ├──► VNet Spoke2 ──► VM-Spoke2
-                                                     └──► Hub GW Subnet ──► VPN GW Hub ──┬──► VPN Connections
-                                                                                          ├──► Peerings
-                                                                                          └──► (dependsOn: VPN GW OnPrem)
+                                                     └──► VNet Spoke2 ──► VM-Spoke2
 
-VM-OnPrem, VM-Hub は各 VNet のサブネット作成後に並列デプロイ
+                                                     └──► Peerings (Hub-Spoke1, Hub-Spoke2)
+
+VM-Hub は Hub VNet のサブネット作成後にデプロイ
 Container App は Container Apps Env + ACR + SQL の準備完了後にデプロイ
 ```
 
