@@ -33,9 +33,6 @@ param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-hellowo
 @description('SQL connection string')
 param sqlConnectionString string = ''
 
-@description('Enable chaos engineering endpoints')
-param enableChaos bool = false
-
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
@@ -106,12 +103,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             memory: '1Gi'
           }
           env: concat(
-            [
-              {
-                name: 'ENABLE_CHAOS'
-                value: string(enableChaos)
-              }
-            ],
+            [],
             !empty(appInsightsConnectionString)
               ? [
                   {

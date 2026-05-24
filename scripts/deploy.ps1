@@ -19,15 +19,11 @@
 .PARAMETER GitHubRepo
   GitHub リポジトリ（owner/repo 形式）。省略時は git remote から自動検出
 
-.PARAMETER EnableChaos
-  カオスエンドポイントを有効化（デフォルト: false）
-
 .PARAMETER SkipOidc
   GitHub Actions OIDC 設定をスキップ
 
 .EXAMPLE
   ./scripts/deploy.ps1
-  ./scripts/deploy.ps1 -EnableChaos
   ./scripts/deploy.ps1 -ResourceGroup "rg-my-demo" -Location "eastus"
   ./scripts/deploy.ps1 -SkipOidc
 #>
@@ -37,7 +33,6 @@ param(
     [string]$Location = "japaneast",
     [hashtable]$Tags = @{},
     [string]$GitHubRepo = "",
-    [switch]$EnableChaos,
     [switch]$SkipOidc
 )
 
@@ -105,11 +100,6 @@ $updateArgs = @(
     "--resource-group", $ResourceGroup,
     "--image", "$acrLoginServer/sre-demo-app:latest"
 )
-
-if ($EnableChaos) {
-    $updateArgs += @("--set-env-vars", "ENABLE_CHAOS=true")
-    Write-Host "  ⚠ カオスエンドポイント有効" -ForegroundColor Red
-}
 
 az @updateArgs -o none
 
