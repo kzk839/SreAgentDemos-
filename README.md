@@ -16,20 +16,15 @@ SreAgentDemos/
 ├── docs/
 │   └── internal/                       # 内部メモ（gitignored）
 ├── scripts/
-│   ├── deploy.ps1                      # 一括デプロイスクリプト（インフラ + アプリ）
-│   ├── destroy.ps1                     # 一括削除スクリプト（RG ごと削除）
-│   ├── deploy-sre-agent.ps1            # SRE Agent デプロイスクリプト
-│   └── destroy-sre-agent.ps1           # SRE Agent 削除スクリプト
+│   ├── deploy.ps1                      # 一括デプロイ（インフラ + アプリ + SRE Agent）
+│   └── destroy.ps1                     # 一括削除（RG ごと削除）
 ├── infra/
 │   ├── main.bicep                      # メインオーケストレーション
 │   ├── main.bicepparam                 # パラメータファイル
 │   ├── sre-agent.bicep                 # SRE Agent 定義
 │   ├── sre-agent.bicepparam            # SRE Agent パラメータ
-│   ├── prompts/                        # SRE Agent プロンプト（KB / instruction）
+│   ├── prompts/                        # SRE Agent instruction / タスク
 │   │   ├── common.md                   # インシデント対応ワークフロー（instruction）
-│   │   ├── app-expert.md               # アプリ専門知識（KB）
-│   │   ├── db-expert.md                # DB 専門知識（KB）
-│   │   ├── network-expert.md           # NW 専門知識（KB）
 │   │   └── health-check.md             # ヘルスチェック（スケジュールタスク用）
 │   └── modules/
 │       ├── vnet.bicep                  # VNet モジュール

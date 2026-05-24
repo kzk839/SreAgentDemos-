@@ -2,7 +2,7 @@
 // Azure SRE Agent - Standalone deployment
 // ============================================================
 // Deploys SRE Agent + Managed Identity.
-// DataConnectors, Knowledge Base, ポータル設定は deploy-sre-agent.ps1
+// DataConnectors, Knowledge Base, ポータル設定は deploy.ps1
 // またはポータル (sre.azure.com) で実施。
 //
 // Usage:
