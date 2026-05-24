@@ -1,20 +1,27 @@
 <#
 .SYNOPSIS
-  SRE Agent Demo 環境を一括デプロイ（インフラ + アプリ + DB 初期化）
+  SRE Agent Demo 環境を一括デプロイ（インフラ + アプリ + SRE Agent）
 
 .DESCRIPTION
-  1. リソースグループ作成
+  1. リソースグループ作成（インフラ用 + SRE Agent 用）
   2. Bicep でインフラデプロイ
   3. ACR にコンテナイメージをビルド & プッシュ
   4. Container App のイメージを更新
-  5. GitHub Actions OIDC 設定（Entra ID + Federated Credential + GitHub Secrets/Variables）
+  5. SRE Agent デプロイ + RBAC 付与
+  6. GitHub Actions OIDC 設定（オプション）
   ※ DB テーブルはアプリ起動時に自動作成されます
 
 .PARAMETER ResourceGroup
-  リソースグループ名（デフォルト: rg-sre-demo）
+  インフラ用リソースグループ名（デフォルト: rg-sre-demo）
 
 .PARAMETER Location
-  リージョン（デフォルト: japaneast）
+  インフラのリージョン（デフォルト: japaneast）
+
+.PARAMETER SreAgentResourceGroup
+  SRE Agent 用リソースグループ名（デフォルト: rg-sre-agent）
+
+.PARAMETER SreAgentLocation
+  SRE Agent のリージョン（eastus2, swedencentral, australiaeast）
 
 .PARAMETER GitHubRepo
   GitHub リポジトリ（owner/repo 形式）。省略時は git remote から自動検出
@@ -31,6 +38,8 @@
 param(
     [string]$ResourceGroup = "rg-sre-demo",
     [string]$Location = "japaneast",
+    [string]$SreAgentResourceGroup = "rg-sre-agent",
+    [string]$SreAgentLocation = "eastus2",
     [hashtable]$Tags = @{},
     [string]$GitHubRepo = "",
     [switch]$EnableOidc
@@ -52,7 +61,7 @@ foreach ($var in $requiredEnvVars) {
 }
 
 # --- 1. リソースグループ作成 ---
-Write-Host "`n[1/6] リソースグループ作成: $ResourceGroup ($Location)" -ForegroundColor Yellow
+Write-Host "`n[1/7] リソースグループ作成: $ResourceGroup ($Location)" -ForegroundColor Yellow
 $rgArgs = @("group", "create", "--name", $ResourceGroup, "--location", $Location, "-o", "none")
 if ($Tags.Count -gt 0) {
     $tagStrings = $Tags.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
@@ -62,7 +71,7 @@ if ($Tags.Count -gt 0) {
 az @rgArgs
 
 # --- 2. Bicep デプロイ ---
-Write-Host "`n[2/6] インフラデプロイ（約 50〜60 分かかります）..." -ForegroundColor Yellow
+Write-Host "`n[2/7] インフラデプロイ（約 20〜30 分かかります）..." -ForegroundColor Yellow
 $deployResult = az deployment group create `
     --resource-group $ResourceGroup `
     --template-file infra/main.bicep `
@@ -84,7 +93,7 @@ Write-Host "  SQL: $($deployResult.sqlServerFqdn.value)" -ForegroundColor Green
 Write-Host "  Container App: $($deployResult.containerAppFqdn.value)" -ForegroundColor Green
 
 # --- 3. ACR にイメージビルド ---
-Write-Host "`n[3/6] コンテナイメージのビルド & ACR プッシュ..." -ForegroundColor Yellow
+Write-Host "`n[3/7] コンテナイメージのビルド & ACR プッシュ..." -ForegroundColor Yellow
 az acr build --registry $acrName --image sre-demo-app:latest ./app/
 
 if ($LASTEXITCODE -ne 0) {
@@ -93,7 +102,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --- 4. Container App のイメージ更新 ---
-Write-Host "`n[4/6] Container App のイメージを更新..." -ForegroundColor Yellow
+Write-Host "`n[4/7] Container App のイメージを更新..." -ForegroundColor Yellow
 $updateArgs = @(
     "containerapp", "update",
     "--name", $appName,
@@ -108,11 +117,84 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# --- 5. GitHub Actions OIDC 設定 ---
+# --- 5. SRE Agent デプロイ ---
+Write-Host "`n[5/7] SRE Agent デプロイ..." -ForegroundColor Yellow
+
+# SRE Agent 用 RG 作成
+$sreRgArgs = @("group", "create", "--name", $SreAgentResourceGroup, "--location", $SreAgentLocation, "-o", "none")
+if ($Tags.Count -gt 0) {
+    $tagStrings = $Tags.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
+    $sreRgArgs += @("--tags") + $tagStrings
+}
+az @sreRgArgs
+Write-Host "  RG: $SreAgentResourceGroup ($SreAgentLocation)" -ForegroundColor DarkGray
+
+# Azure CLI 拡張機能
+az extension add --name application-insights --only-show-errors 2>$null
+
+# インフラ RG から情報取得
+$subscriptionId = (az account show --query id -o tsv)
+$infraRgId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup"
+$appiJson = az monitor app-insights component show -g $ResourceGroup --query "[0]" -o json | ConvertFrom-Json
+if (-not $appiJson) { Write-Error "Application Insights が見つかりません"; exit 1 }
+
+# 環境変数セット
+$env:SRE_INFRA_RG_ID = $infraRgId
+$env:SRE_APPI_APP_ID = $appiJson.appId
+$env:SRE_APPI_CONNECTION_STRING = $appiJson.connectionString
+
+# Bicep デプロイ
+$agentResult = az deployment group create `
+    --resource-group $SreAgentResourceGroup `
+    --template-file infra/sre-agent.bicep `
+    --parameters infra/sre-agent.bicepparam `
+    --query "properties.outputs" `
+    -o json | ConvertFrom-Json
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "SRE Agent デプロイに失敗しました。"
+    exit 1
+}
+
+$agentName = $agentResult.agentName.value
+$miPrincipalId = $agentResult.managedIdentityPrincipalId.value
+$portalUrl = $agentResult.portalUrl.value
+Write-Host "  Agent: $agentName" -ForegroundColor Green
+Write-Host "  Portal: $portalUrl" -ForegroundColor Green
+
+# RBAC 付与
+$roles = @(
+    @{ Name = "Reader"; Id = "acdd72a7-3385-48ef-bd42-f606fba81ae7" }
+    @{ Name = "Monitoring Reader"; Id = "43d0d8ad-25c7-4714-9337-8ba259a9fe05" }
+    @{ Name = "Log Analytics Reader"; Id = "73c42c96-874c-492b-b04d-ab87d138a893" }
+)
+foreach ($role in $roles) {
+    az role assignment create `
+        --assignee-object-id $miPrincipalId `
+        --assignee-principal-type ServicePrincipal `
+        --role $role.Id `
+        --scope $infraRgId `
+        -o none 2>$null
+    Write-Host "  $($role.Name) をインフラ RG に付与" -ForegroundColor DarkGray
+}
+
+# SRE Agent Administrator
+$currentUserId = az ad signed-in-user show --query id -o tsv 2>$null
+if ($currentUserId) {
+    az role assignment create `
+        --assignee-object-id $currentUserId `
+        --assignee-principal-type User `
+        --role "SRE Agent Administrator" `
+        --scope $agentResult.agentResourceId.value `
+        -o none 2>$null
+    Write-Host "  SRE Agent Administrator を付与" -ForegroundColor DarkGray
+}
+
+# --- 6. GitHub Actions OIDC 設定 ---
 if (-not $EnableOidc) {
-    Write-Host "`n[5/6] GitHub Actions OIDC 設定...スキップ（有効化は -EnableOidc）" -ForegroundColor DarkGray
+    Write-Host "`n[6/7] GitHub Actions OIDC 設定...スキップ（有効化は -EnableOidc）" -ForegroundColor DarkGray
 } else {
-    Write-Host "`n[5/6] GitHub Actions OIDC 設定..." -ForegroundColor Yellow
+    Write-Host "`n[6/7] GitHub Actions OIDC 設定..." -ForegroundColor Yellow
 
     # gh CLI チェック
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -206,8 +288,8 @@ if (-not $EnableOidc) {
     }
 }
 
-# --- 6. 完了 ---
-Write-Host "`n[6/6] デプロイ完了!" -ForegroundColor Green
+# --- 7. 完了 ---
+Write-Host "`n[7/7] デプロイ完了!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " アクセス情報" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -217,5 +299,10 @@ Write-Host "  SQL Server:     $($deployResult.sqlServerFqdn.value)" -ForegroundC
 Write-Host "  Log Analytics:  $($deployResult.logAnalyticsWorkspaceName.value)" -ForegroundColor White
 Write-Host "  VM Hub:         $($deployResult.vmHubPrivateIp.value)" -ForegroundColor White
 Write-Host "  VM Spoke2:      $($deployResult.vmSpoke2PrivateIp.value)" -ForegroundColor White
+Write-Host "  SRE Agent:      $portalUrl" -ForegroundColor White
+Write-Host ""
+Write-Host "  次のステップ:" -ForegroundColor Yellow
+Write-Host "    1. ポータルで Knowledge Source に knowledge/ のファイルをアップロード" -ForegroundColor White
+Write-Host "    2. ポータルで instruction に infra/prompts/common.md の内容を設定" -ForegroundColor White
 Write-Host ""
 Write-Host "  削除: ./scripts/destroy.ps1 -ResourceGroup $ResourceGroup" -ForegroundColor DarkGray

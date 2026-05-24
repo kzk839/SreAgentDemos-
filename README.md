@@ -91,6 +91,9 @@ $env:SRE_NOTIFICATION_EMAIL = '<通知先メールアドレス>'
 
 # GitHub Actions OIDC 設定も行う場合（gh CLI が必要）
 ./scripts/deploy.ps1 -EnableOidc
+
+# SRE Agent のリージョンを変更する場合
+./scripts/deploy.ps1 -SreAgentLocation "swedencentral"
 ```
 
 **所要時間:** 約 20〜30 分
@@ -101,22 +104,6 @@ $env:SRE_NOTIFICATION_EMAIL = '<通知先メールアドレス>'
 ./scripts/destroy.ps1                           # 確認プロンプトあり
 ./scripts/destroy.ps1 -NoConfirm                 # 確認なしで即削除
 ./scripts/destroy.ps1 -ResourceGroup "rg-my-demo" # RG 名を指定
-```
-
-### SRE Agent デプロイ（インフラとは別に実施）
-
-SRE Agent はインフラとは別の RG にデプロイします。対応リージョンは eastus2, swedencentral, australiaeast のみです。
-
-```powershell
-# デプロイ
-./scripts/deploy-sre-agent.ps1 -InfraResourceGroup "rg-sre-demo6"
-
-# リージョンを変更する場合
-./scripts/deploy-sre-agent.ps1 -InfraResourceGroup "rg-sre-demo6" -Location "swedencentral"
-
-# 削除（インフラには影響なし）
-./scripts/destroy-sre-agent.ps1                   # 確認プロンプトあり
-./scripts/destroy-sre-agent.ps1 -NoConfirm         # 確認なしで即削除
 ```
 
 ### 手動デプロイ（個別実行）
