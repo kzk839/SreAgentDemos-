@@ -8,8 +8,13 @@ Azure SRE Agent のデモ環境。Hub-Spoke ネットワーク上に Container A
 SreAgentDemos/
 ├── .gitignore                          # Git 除外設定（.env, 証明書, node_modules 等）
 ├── README.md                           # 本ドキュメント
+├── knowledge/                          # SRE Agent ナレッジベース（KB）
+│   ├── infrastructure-spec.md          # インフラ構成仕様
+│   ├── app-expert.md                   # アプリ専門知識
+│   ├── db-expert.md                    # DB 専門知識
+│   └── network-expert.md              # NW 専門知識
 ├── docs/
-│   └── infrastructure-spec.md          # インフラ構成仕様（SRE Agent KB 用）
+│   └── internal/                       # 内部メモ（gitignored）
 ├── scripts/
 │   ├── deploy.ps1                      # 一括デプロイスクリプト（インフラ + アプリ）
 │   ├── destroy.ps1                     # 一括削除スクリプト（RG ごと削除）
