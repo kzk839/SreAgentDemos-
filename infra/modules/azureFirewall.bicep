@@ -26,7 +26,7 @@ resource firewallPolicy 'Microsoft.Network/firewallPolicies@2024-01-01' = {
   location: location
   properties: {
     sku: {
-      tier: 'Standard'
+      tier: 'Basic'
     }
     threatIntelMode: 'Alert'
   }
@@ -110,7 +110,7 @@ resource firewall 'Microsoft.Network/azureFirewalls@2024-01-01' = {
   properties: {
     sku: {
       name: 'AZFW_VNet'
-      tier: 'Standard'
+      tier: 'Basic'
     }
     firewallPolicy: {
       id: firewallPolicy.id

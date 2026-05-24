@@ -71,7 +71,7 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 | VNet × 3 | `{prefix}-vnet-hub`, `spoke1`, `spoke2` | 上記 IP 設計に基づく |
 | NSG (VM 用) | `{prefix}-nsg-default` | VM サブネット共通。RDP (10.0.0.0/8 → 3389) と ICMP を許可 |
 | NSG (PE 用) | `{prefix}-nsg-private-endpoints` | Spoke1 sn-private-endpoints 用。HTTPS (443) と SQL (1433) のみ内部から許可、他全拒否 |
-| Azure Firewall | `{prefix}-afw` | Hub VNet に配置。Standard SKU |
+| Azure Firewall | `{prefix}-afw` | Hub VNet に配置。Basic SKU |
 | Firewall Policy | `{prefix}-afw-policy` | 内部通信全許可 + HTTP/HTTPS/DNS のアウトバウンド許可 |
 | Route Table (Spoke1) | `{prefix}-rt-spoke1` | Hub, Spoke2 → FW へ転送（0.0.0.0/0 なし: Container Apps の Azure サービス通信を維持） |
 | Route Table (Spoke2) | `{prefix}-rt-spoke2` | 0.0.0.0/0, Hub, Spoke1 → FW へ転送 |
