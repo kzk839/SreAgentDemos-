@@ -237,7 +237,7 @@ SreAgentDemos/
 
 ### 一括デプロイ（推奨）
 
-`scripts/deploy.ps1` で RG 作成 → Bicep デプロイ → ACR ビルド → Container App 更新 → OIDC 設定を一括実行します。
+`scripts/deploy.ps1` で RG 作成 → Bicep デプロイ → ACR ビルド → Container App 更新を一括実行します。
 
 ```powershell
 # 1. 環境変数を設定
@@ -246,7 +246,7 @@ $env:SRE_ADMIN_PASSWORD = '<VMパスワード>'
 $env:SRE_SQL_PASSWORD = '<SQLパスワード>'
 $env:SRE_NOTIFICATION_EMAIL = '<通知先メールアドレス>'
 
-# 2. デプロイ実行（OIDC 設定込み）
+# 2. デプロイ実行
 ./scripts/deploy.ps1
 
 # リソースグループ名・リージョンを変更する場合
@@ -255,11 +255,9 @@ $env:SRE_NOTIFICATION_EMAIL = '<通知先メールアドレス>'
 # リソースグループにタグを付与する場合（ポリシー制約等がある環境向け）
 ./scripts/deploy.ps1 -Tags @{ "Environment"="Demo"; "Project"="SreAgent" }
 
-# OIDC 設定をスキップする場合
-./scripts/deploy.ps1 -SkipOidc
+# GitHub Actions OIDC 設定も行う場合（gh CLI が必要）
+./scripts/deploy.ps1 -EnableOidc
 ```
-
-> **前提:** OIDC 設定には [GitHub CLI (`gh`)](https://cli.github.com/) が必要です。未インストールの場合は OIDC ステップのみスキップされます。
 
 ### 一括削除
 

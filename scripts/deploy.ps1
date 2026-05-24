@@ -19,13 +19,13 @@
 .PARAMETER GitHubRepo
   GitHub リポジトリ（owner/repo 形式）。省略時は git remote から自動検出
 
-.PARAMETER SkipOidc
-  GitHub Actions OIDC 設定をスキップ
+.PARAMETER EnableOidc
+  GitHub Actions OIDC 設定を有効化（デフォルト: 無効）
 
 .EXAMPLE
   ./scripts/deploy.ps1
   ./scripts/deploy.ps1 -ResourceGroup "rg-my-demo" -Location "eastus"
-  ./scripts/deploy.ps1 -SkipOidc
+  ./scripts/deploy.ps1 -EnableOidc
 #>
 
 param(
@@ -33,7 +33,7 @@ param(
     [string]$Location = "japaneast",
     [hashtable]$Tags = @{},
     [string]$GitHubRepo = "",
-    [switch]$SkipOidc
+    [switch]$EnableOidc
 )
 
 $ErrorActionPreference = "Stop"
@@ -109,8 +109,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --- 5. GitHub Actions OIDC 設定 ---
-if ($SkipOidc) {
-    Write-Host "`n[5/6] GitHub Actions OIDC 設定...スキップ (-SkipOidc)" -ForegroundColor DarkGray
+if (-not $EnableOidc) {
+    Write-Host "`n[5/6] GitHub Actions OIDC 設定...スキップ（有効化は -EnableOidc）" -ForegroundColor DarkGray
 } else {
     Write-Host "`n[5/6] GitHub Actions OIDC 設定..." -ForegroundColor Yellow
 
