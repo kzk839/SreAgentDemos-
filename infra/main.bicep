@@ -255,6 +255,7 @@ module azureFirewall 'modules/azureFirewall.bicep' = {
     subnetId: vnetHub.outputs.subnets[0].id // AzureFirewallSubnet
     managementSubnetId: vnetHub.outputs.subnets[1].id // AzureFirewallManagementSubnet
     internalAddressPrefixes: allPrefixes
+    logAnalyticsWorkspaceId: logAnalytics.id
   }
 }
 

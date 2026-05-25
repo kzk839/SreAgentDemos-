@@ -13,6 +13,9 @@ param managementSubnetId string
 @description('Internal address prefixes for firewall rules')
 param internalAddressPrefixes array
 
+@description('Log Analytics Workspace ID for diagnostic settings')
+param logAnalyticsWorkspaceId string = ''
+
 resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   name: '${name}-pip'
   location: location
@@ -157,6 +160,27 @@ resource firewall 'Microsoft.Network/azureFirewalls@2024-01-01' = {
   dependsOn: [
     ruleCollectionGroup
   ]
+}
+
+resource diagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceId)) {
+  name: '${name}-diag'
+  scope: firewall
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      {
+        categoryGroup: 'allLogs'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
+  }
 }
 
 output privateIp string = firewall.properties.ipConfigurations[0].properties.privateIPAddress
