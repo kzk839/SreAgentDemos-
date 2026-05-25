@@ -7,6 +7,9 @@ param location string
 @description('AzureFirewallSubnet resource ID')
 param subnetId string
 
+@description('AzureFirewallManagementSubnet resource ID (required for Basic SKU)')
+param managementSubnetId string
+
 @description('Internal address prefixes for firewall rules')
 param internalAddressPrefixes array
 
@@ -21,12 +24,23 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   }
 }
 
+resource managementPublicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
+  name: '${name}-mgmt-pip'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
 resource firewallPolicy 'Microsoft.Network/firewallPolicies@2024-01-01' = {
   name: '${name}-policy'
   location: location
   properties: {
     sku: {
-      tier: 'Standard'
+      tier: 'Basic'
     }
     threatIntelMode: 'Alert'
   }
@@ -110,10 +124,21 @@ resource firewall 'Microsoft.Network/azureFirewalls@2024-01-01' = {
   properties: {
     sku: {
       name: 'AZFW_VNet'
-      tier: 'Standard'
+      tier: 'Basic'
     }
     firewallPolicy: {
       id: firewallPolicy.id
+    }
+    managementIpConfiguration: {
+      name: 'mgmt-ipconfig'
+      properties: {
+        publicIPAddress: {
+          id: managementPublicIp.id
+        }
+        subnet: {
+          id: managementSubnetId
+        }
+      }
     }
     ipConfigurations: [
       {

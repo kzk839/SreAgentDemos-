@@ -229,7 +229,7 @@ resource nsgPrivateEndpoints 'Microsoft.Network/networkSecurityGroups@2024-01-01
 // VNets - Hub
 // ============================================================
 
-// Hub VNet: AzureFirewallSubnet + default subnet
+// Hub VNet: AzureFirewallSubnet + AzureFirewallManagementSubnet + default subnet
 module vnetHub 'modules/vnet.bicep' = {
   name: 'deploy-vnet-hub'
   params: {
@@ -238,6 +238,7 @@ module vnetHub 'modules/vnet.bicep' = {
     addressPrefix: hubPrefix
     subnets: [
       { name: 'AzureFirewallSubnet', addressPrefix: '10.1.1.0/26' }
+      { name: 'AzureFirewallManagementSubnet', addressPrefix: '10.1.3.0/26' }
       { name: 'sn-default', addressPrefix: '10.1.2.0/24', nsgId: nsgDefault.id }
     ]
   }
@@ -252,6 +253,7 @@ module azureFirewall 'modules/azureFirewall.bicep' = {
     name: '${prefix}-afw'
     location: location
     subnetId: vnetHub.outputs.subnets[0].id // AzureFirewallSubnet
+    managementSubnetId: vnetHub.outputs.subnets[1].id // AzureFirewallManagementSubnet
     internalAddressPrefixes: allPrefixes
   }
 }
@@ -635,7 +637,7 @@ module vmHub 'modules/vm.bicep' = {
   params: {
     name: '${prefix}-vm-hub'
     location: location
-    subnetId: vnetHub.outputs.subnets[1].id // sn-default
+    subnetId: vnetHub.outputs.subnets[2].id // sn-default
     adminUsername: adminUsername
     adminPassword: adminPassword
     vmSize: vmSize
