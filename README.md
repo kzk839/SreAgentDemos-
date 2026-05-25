@@ -42,9 +42,6 @@ SreAgentDemos/
 │   ├── package.json                    # Node.js 依存 (express, mssql, applicationinsights)
 │   └── src/
 │       └── server.js                   # REST API（バグシナリオ埋め込み済み）
-└── .github/
-    └── workflows/
-│       └── deploy.yml                  # GitHub Actions CI/CD ワークフロー
 ```
 
 ---
