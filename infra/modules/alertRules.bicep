@@ -37,7 +37,7 @@ resource alertVmCpu 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' 
     description: 'Fires when any VM CPU exceeds 90% averaged over 5 minutes'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       logAnalyticsWorkspaceId
@@ -78,7 +78,7 @@ resource alertVmMemory 'Microsoft.Insights/scheduledQueryRules@2023-03-15-previe
     description: 'Fires when any VM available memory drops below 500 MB'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       logAnalyticsWorkspaceId
@@ -163,7 +163,7 @@ resource alertSqlDtu 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     description: 'Fires when SQL Database DTU consumption exceeds 90%'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       sqlDatabaseId
@@ -198,7 +198,7 @@ resource alertSqlDeadlock 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     description: 'Fires when SQL Database detects a deadlock'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       sqlDatabaseId
@@ -233,7 +233,7 @@ resource alertSqlConnFail 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     description: 'Fires when SQL Database failed connections exceed 5 in 5 minutes'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       sqlDatabaseId
@@ -272,7 +272,7 @@ resource alertAppResponseTime 'Microsoft.Insights/scheduledQueryRules@2023-03-15
     description: 'Fires when average server response time exceeds 5 seconds (excluding health probes)'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       appInsightsId
@@ -314,7 +314,7 @@ resource alertAppFailedRequests 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     description: 'Fires when failed request count exceeds 10 in 5 minutes'
     severity: 1
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       appInsightsId
@@ -349,7 +349,7 @@ resource alertAppExceptions 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     description: 'Fires when server exceptions are detected'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       appInsightsId
@@ -388,7 +388,7 @@ resource alertCaRestarts 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     description: 'Fires when Container App restarts are detected'
     severity: 2
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       containerAppId
@@ -423,7 +423,7 @@ resource alertCaReplicasDown 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     description: 'Fires when Container App has zero running replicas'
     severity: 0
     enabled: true
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     scopes: [
       containerAppId
