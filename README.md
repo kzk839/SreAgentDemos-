@@ -93,6 +93,53 @@ $env:SRE_NOTIFICATION_EMAIL = '<通知先メールアドレス>'
 
 **所要時間:** 約 20〜30 分
 
+### デプロイ後のセットアップ（ポータル: sre.azure.com）
+
+`deploy.ps1` 完了後、以下をポータルで設定してください。
+
+#### 1. コネクタ設定（推奨、必須ではない）
+
+Agent は `az monitor log-analytics query` 等で直接クエリできるため、コネクタなしでも動作します。
+設定すると Agent が最初からどのデータソースを見ればよいか知っている状態になり、調査が速くなります。
+
+| コネクタ | 用途 |
+|---------|------|
+| Log Analytics | `sre-demo-law` への永続的コンテキスト |
+| Application Insights | `sre-demo-appi` への永続的コンテキスト |
+
+#### 2. ナレッジベース
+
+`knowledge/` ディレクトリのファイルを Knowledge Source にアップロード（ポータル UI から）。
+
+| ファイル | 用途 |
+|---------|------|
+| `knowledge/infrastructure-spec.md` | インフラ構成仕様 |
+| `knowledge/app-expert.md` | アプリケーション専門知識 |
+| `knowledge/db-expert.md` | DB 専門知識 |
+| `knowledge/network-expert.md` | NW 専門知識 |
+
+#### 3. インシデント応答プラン
+
+`infra/prompts/common.md` の内容を instruction に設定し、アラートとの紐付けを行います。
+
+| アラート | モード |
+|---------|--------|
+| `app-slow-response` | Autonomous |
+| `app-failed-requests` | Autonomous |
+| `app-exceptions` | Review |
+| `vm-cpu-high` | Review |
+| `sql-dtu-high` | Review |
+| `ca-replicas-down` | Autonomous |
+
+#### 4. スケジュールタスク
+
+以下のファイルの内容をスケジュールタスクの指示として登録します。
+
+| ファイル | タスク名 | スケジュール |
+|---------|---------|------------|
+| `infra/prompts/health-check.md` | Daily Health Check | 毎日 9:00 AM |
+| `infra/prompts/cost-analysis.md` | Monthly Cost Analysis | 毎月 1 日 9:00 AM |
+
 ### 一括削除
 
 ```powershell
