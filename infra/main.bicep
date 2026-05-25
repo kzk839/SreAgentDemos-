@@ -518,6 +518,7 @@ module containerApps 'modules/containerApps.bicep' = {
     acrLoginServer: containerRegistry.outputs.loginServer
     managedIdentityId: managedIdentity.id
     sqlConnectionString: 'Server=tcp:${sqlDatabase.outputs.serverFqdn},1433;Initial Catalog=${sqlDatabase.outputs.databaseName};User ID=${sqlAdminUsername};Password=${sqlAdminPassword};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;'
+    logAnalyticsWorkspaceId: logAnalytics.id
   }
   dependsOn: [
     acrPullRole
@@ -627,6 +628,55 @@ resource bastionSpoke2 'Microsoft.Network/bastionHosts@2024-01-01' = {
     virtualNetwork: {
       id: vnetSpoke2.outputs.id
     }
+  }
+}
+
+// ============================================================
+// Storage Account (for VNet Flow Logs)
+// ============================================================
+resource flowLogsStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: 'sreflowlogs${uniqueString(resourceGroup().id)}'
+  location: location
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+    allowBlobPublicAccess: false
+  }
+}
+
+resource flowLogsBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: flowLogsStorage
+  name: 'default'
+  properties: {
+    deleteRetentionPolicy: {
+      enabled: false
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: false
+    }
+  }
+}
+
+// ============================================================
+// VNet Flow Logs (Traffic Analytics)
+// ============================================================
+module vnetFlowLogs 'modules/vnetFlowLogs.bicep' = {
+  name: 'deploy-vnet-flow-logs'
+  scope: resourceGroup('NetworkWatcherRG')
+  params: {
+    location: location
+    networkWatcherName: 'NetworkWatcher_${location}'
+    vnets: [
+      { name: 'hub', id: vnetHub.outputs.id }
+      { name: 'spoke1', id: vnetSpoke1.outputs.id }
+      { name: 'spoke2', id: vnetSpoke2.outputs.id }
+    ]
+    storageAccountId: flowLogsStorage.id
+    workspaceId: logAnalytics.id
   }
 }
 

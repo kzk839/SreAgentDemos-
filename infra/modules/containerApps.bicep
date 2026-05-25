@@ -33,6 +33,9 @@ param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-hellowo
 @description('SQL connection string')
 param sqlConnectionString string = ''
 
+@description('Log Analytics Workspace resource ID for diagnostic settings')
+param logAnalyticsWorkspaceId string = ''
+
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
@@ -148,6 +151,31 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         maxReplicas: 3
       }
     }
+  }
+}
+
+// Diagnostic settings for Container Apps Environment
+resource environmentDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceId)) {
+  name: '${environmentName}-diag'
+  scope: environment
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      {
+        category: 'ContainerAppConsoleLogs'
+        enabled: true
+      }
+      {
+        category: 'ContainerAppSystemLogs'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
   }
 }
 
