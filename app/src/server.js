@@ -116,12 +116,12 @@ app.get('/ready', async (_req, res) => {
 // アラート: app-exceptions, app-failed-requests
 // 調査ポイント: App Insights のスタックトレース、デプロイタイミングとの相関
 // ---------------------------------------------------------------------------
-// app.get('/api/items', (_req, _res) => {
-//   // 開発者の意図しない undefined 参照（レビュー漏れを想定）
-//   const config = undefined;
-//   const items = config.getItems();  // TypeError: Cannot read properties of undefined
-//   _res.json(items);
-// });
+app.get('/api/items', (_req, _res) => {
+  // 開発者の意図しない undefined 参照（レビュー漏れを想定）
+  const config = undefined;
+  const items = config.getItems();  // TypeError: Cannot read properties of undefined
+  _res.json(items);
+});
 // ===========================================================================
 
 // ===========================================================================
@@ -152,16 +152,16 @@ app.get('/ready', async (_req, res) => {
 // ===========================================================================
 
 // 正常版（バグシナリオ使用時はこの関数をコメントアウトしてください）
-app.get('/api/items', async (_req, res) => {
-  try {
-    const p = await getPool();
-    const result = await p.request().query('SELECT TOP 50 * FROM Items ORDER BY CreatedAt DESC');
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('GET /api/items error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+// app.get('/api/items', async (_req, res) => {
+//   try {
+//     const p = await getPool();
+//     const result = await p.request().query('SELECT TOP 50 * FROM Items ORDER BY CreatedAt DESC');
+//     res.json(result.recordset);
+//   } catch (err) {
+//     console.error('GET /api/items error:', err);
+//     res.status(500).json({ error: 'Internal server error' });
+//   }
+// });
 
 app.post('/api/items', async (req, res) => {
   try {
