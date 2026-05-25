@@ -164,7 +164,7 @@ Write-Host "  Portal: $portalUrl" -ForegroundColor Green
 
 # RBAC 付与
 $roles = @(
-    @{ Name = "Reader"; Id = "acdd72a7-3385-48ef-bd42-f606fba81ae7" }
+    @{ Name = "Contributor"; Id = "b24988ac-6180-42a0-ab88-20f7382dd24c" }
     @{ Name = "Monitoring Reader"; Id = "43d0d8ad-25c7-4714-9337-8ba259a9fe05" }
     @{ Name = "Log Analytics Reader"; Id = "73c42c96-874c-492b-b04d-ab87d138a893" }
 )
