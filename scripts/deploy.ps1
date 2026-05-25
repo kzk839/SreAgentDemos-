@@ -178,6 +178,15 @@ foreach ($role in $roles) {
     Write-Host "  $($role.Name) をインフラ RG に付与" -ForegroundColor DarkGray
 }
 
+# Cost Management Reader (サブスクリプションスコープ)
+az role assignment create `
+    --assignee-object-id $miPrincipalId `
+    --assignee-principal-type ServicePrincipal `
+    --role "72fafb9e-0641-4937-9268-a91bfd8191a3" `
+    --scope "/subscriptions/$subscriptionId" `
+    -o none 2>$null
+Write-Host "  Cost Management Reader をサブスクリプションに付与" -ForegroundColor DarkGray
+
 # SRE Agent Administrator
 $currentUserId = az ad signed-in-user show --query id -o tsv 2>$null
 if ($currentUserId) {
