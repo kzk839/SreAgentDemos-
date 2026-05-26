@@ -196,18 +196,6 @@ az containerapp update --name sre-demo-app --resource-group rg-sre-demo `
 
 ---
 
-## 運用想定
-
-環境を常時残す想定ではなく、必要な時に `deploy.ps1` でデプロイし、使い終わったら `destroy.ps1` で RG ごと削除する使い捨て運用です。
-
-| 項目 | RG 削除で消える？ | 再デプロイ時 |
-|------|:-:|---|
-| Azure リソース（VM, ACR, SQL 等） | ✅ | `deploy.ps1` が再作成 |
-
-`deploy.ps1` は全ステップが冪等に設計されているため、初回でも再デプロイでも同じコマンドで実行できます。
-
----
-
 ## デプロイ順序（依存関係）
 
 ```
@@ -225,16 +213,5 @@ NSG ──► VNet Hub ──► Azure FW ──► Route Tables ──┬──
 VM-Hub は Hub VNet のサブネット作成後にデプロイ
 Container App は Container Apps Env + ACR + SQL の準備完了後にデプロイ
 ```
-
----
-
-## Spoke 間テストシナリオ
-
-| # | テスト内容 | 方法 | 障害注入例 |
-|---|----------|------|----------|
-| 1 | Spoke2 VM → Container App API | `Invoke-RestMethod` で API エンドポイントに HTTP リクエスト | FW ルール変更、UDR 変更、Container App 停止 |
-| 2 | Spoke2 VM → SQL Private EP | `sqlcmd` で直接 SQL 接続 | Private EP の DNS 破壊、SQL 一時停止 |
-| 3 | Spoke2 VM → ACR | `az acr login` + `docker pull` でイメージ取得 | ACR FW ルール変更、Private EP 削除 |
-| 4 | DNS 解決テスト | `Resolve-DnsName` で Private DNS Zone の名前解決確認 | DNS Zone リンク削除、レコード削除 |
 
 
