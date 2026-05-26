@@ -116,12 +116,12 @@ app.get('/ready', async (_req, res) => {
 // アラート: app-exceptions, app-failed-requests
 // 調査ポイント: App Insights のスタックトレース、デプロイタイミングとの相関
 // ---------------------------------------------------------------------------
-app.get('/api/items', (_req, _res) => {
-  // 開発者の意図しない undefined 参照（レビュー漏れを想定）
-  const config = undefined;
-  const items = config.getItems();  // TypeError: Cannot read properties of undefined
-  _res.json(items);
-});
+// app.get('/api/items', (_req, _res) => {
+//   // 開発者の意図しない undefined 参照（レビュー漏れを想定）
+//   const config = undefined;
+//   const items = config.getItems();  // TypeError: Cannot read properties of undefined
+//   _res.json(items);
+// });
 // ===========================================================================
 
 // ===========================================================================
@@ -152,16 +152,16 @@ app.get('/api/items', (_req, _res) => {
 // ===========================================================================
 
 // 正常版（バグシナリオ使用時はこの関数をコメントアウトしてください）
-// app.get('/api/items', async (_req, res) => {
-//   try {
-//     const p = await getPool();
-//     const result = await p.request().query('SELECT TOP 50 * FROM Items ORDER BY CreatedAt DESC');
-//     res.json(result.recordset);
-//   } catch (err) {
-//     console.error('GET /api/items error:', err);
-//     res.status(500).json({ error: 'Internal server error' });
-//   }
-// });
+app.get('/api/items', async (_req, res) => {
+  try {
+    const p = await getPool();
+    const result = await p.request().query('SELECT TOP 50 * FROM Items ORDER BY CreatedAt DESC');
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('GET /api/items error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 app.post('/api/items', async (req, res) => {
   try {
@@ -194,9 +194,52 @@ app.delete('/api/items/:id', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Background worker: 業務処理シミュレーション（ランダム間隔で READ / WRITE）
+// ---------------------------------------------------------------------------
+
+// READ: 10〜30秒ごとにランダムなアイテムを取得
+function scheduleRead() {
+  const delay = (Math.floor(Math.random() * 21) + 10) * 1000;
+  setTimeout(async () => {
+    try {
+      const p = await getPool();
+      await p.request().query('SELECT TOP 5 * FROM Items ORDER BY NEWID()');
+    } catch (err) {
+      console.error('BG read error:', err.message);
+    }
+    scheduleRead();
+  }, delay);
+}
+
+// WRITE: 15〜45秒ごとにランダムなアイテムのステータスを更新
+function scheduleWrite() {
+  const delay = (Math.floor(Math.random() * 31) + 15) * 1000;
+  setTimeout(async () => {
+    try {
+      const p = await getPool();
+      const { recordset } = await p.request()
+        .query('SELECT TOP 1 Id, Status FROM Items ORDER BY NEWID()');
+      if (recordset.length > 0) {
+        const item = recordset[0];
+        const newStatus = item.Status === 'Active' ? 'Processed' : 'Active';
+        await p.request()
+          .input('id', sql.Int, item.Id)
+          .input('status', sql.NVarChar(50), newStatus)
+          .query('UPDATE Items SET Status = @status WHERE Id = @id');
+      }
+    } catch (err) {
+      console.error('BG write error:', err.message);
+    }
+    scheduleWrite();
+  }, delay);
+}
+
+// ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 app.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
   await initDb();
+  scheduleRead();
+  scheduleWrite();
 });
