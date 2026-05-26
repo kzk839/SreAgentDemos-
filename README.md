@@ -41,8 +41,42 @@ SreAgentDemos/
 │   ├── .dockerignore                   # Docker ビルド除外設定
 │   ├── package.json                    # Node.js 依存 (express, mssql, applicationinsights)
 │   └── src/
-│       └── server.js                   # REST API（バグシナリオ埋め込み済み）
+│       └── server.js                   # REST API + バックグラウンドワーカー（バグシナリオ埋め込み済み）
 ```
+
+---
+
+## アプリケーション仕様
+
+### REST API
+
+| エンドポイント | 説明 |
+|----------------|------|
+| `GET /health` | ヘルスチェック |
+| `GET /ready` | DB 接続確認付きレディネスチェック |
+| `GET /api/items` | Items テーブルから最新 50 件を取得 |
+| `POST /api/items` | 新規アイテム作成（`{"name": "..."}` 必須） |
+| `DELETE /api/items/:id` | アイテム削除 |
+
+### バックグラウンドワーカー
+
+アプリ起動後、業務アプリケーションの動作をシミュレートするバックグラウンドワーカーが自動的に動作します。
+
+| 操作 | 間隔 | 内容 |
+|------|------|------|
+| READ | 10〜30秒（ランダム） | Items テーブルからランダムに 5 件取得 |
+| WRITE | 15〜45秒（ランダム） | ランダムな 1 件の Status を `Active` ↔ `Processed` で切り替え |
+
+App Insights の `dependencies` テーブルに SQL テレメトリが継続的に蓄積されるため、DB 障害時にエラーが自動的に記録されます。
+
+### バグシナリオ
+
+`server.js` には以下のバグシナリオがコメントアウト状態で埋め込まれています。
+
+| シナリオ | 効果 | アラート |
+|----------|------|----------|
+| BUG SCENARIO A | `GET /api/items` で `TypeError` 例外が発生 | `app-exceptions`, `app-failed-requests` |
+| BUG SCENARIO B | `GET /api/items` で N+1 クエリによるレスポンス遅延 | `app-slow-response` |
 
 ---
 
