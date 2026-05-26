@@ -312,6 +312,19 @@ Write-Host "  SRE Agent:      $portalUrl" -ForegroundColor White
 Write-Host ""
 Write-Host "  次のステップ:" -ForegroundColor Yellow
 Write-Host "    1. ポータルで Knowledge Source に knowledge/ のファイルをアップロード" -ForegroundColor White
-Write-Host "    2. ポータルで instruction に infra/prompts/common.md の内容を設定" -ForegroundColor White
+Write-Host "    2. ポータルで instruction に infra/prompts/incident-auto.md の内容を設定" -ForegroundColor White
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host " VM 用変数設定（Bastion 接続後にコピペ）" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+$vmVarsBlock = @"
+`$RG = "$ResourceGroup"
+`$SUB = "$((az account show --query id -o tsv))"
+`$FQDN = "$($deployResult.containerAppFqdn.value)"
+`$SQL_SERVER = "$($deployResult.sqlServerFqdn.value)"
+`$ACR_NAME = "$acrName"
+`$connStr = "Server=`$SQL_SERVER;Database=sre-demo-sqldb;User Id=sqladmin;Password=<pass>;Encrypt=True;TrustServerCertificate=False;Application Name=sre-demo-vm-hub"
+"@
+Write-Host $vmVarsBlock -ForegroundColor White
 Write-Host ""
 Write-Host "  削除: ./scripts/destroy.ps1 -ResourceGroup $ResourceGroup" -ForegroundColor DarkGray
