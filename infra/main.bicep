@@ -517,7 +517,7 @@ module containerApps 'modules/containerApps.bicep' = {
     appInsightsConnectionString: appInsights.properties.ConnectionString
     acrLoginServer: containerRegistry.outputs.loginServer
     managedIdentityId: managedIdentity.id
-    sqlConnectionString: 'Server=tcp:${sqlDatabase.outputs.serverFqdn},1433;Initial Catalog=${sqlDatabase.outputs.databaseName};User ID=${sqlAdminUsername};Password=${sqlAdminPassword};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;'
+    sqlConnectionString: 'Server=tcp:${sqlDatabase.outputs.serverFqdn},1433;Initial Catalog=${sqlDatabase.outputs.databaseName};User ID=${sqlAdminUsername};Password=${sqlAdminPassword};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;Application Name=${prefix}-app;'
     logAnalyticsWorkspaceId: logAnalytics.id
   }
   dependsOn: [
