@@ -114,7 +114,7 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 |---------|------|------|
 | Log Analytics Workspace | `{prefix}-law` | PerGB2018 SKU, 保持期間 30 日 |
 | Application Insights | `{prefix}-appi` | Container App のアプリ監視。Log Analytics に接続 |
-| Data Collection Rule | `{prefix}-dcr-windows` | パフォーマンスカウンター + Windows イベントログ |
+| Data Collection Rule | `{prefix}-dcr-windows` | パフォーマンスカウンター（システム + プロセスレベル）+ Windows イベントログ |
 | Azure Monitor Agent | 各 VM に拡張機能として導入 | 自動アップグレード有効 |
 | DCR Association × 2 | 各 VM にスコープ | DCR を各 VM に関連付け |
 | Action Group | `{prefix}-ag-sre` | メール通知用アクショングループ |
@@ -129,6 +129,36 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 | Alert Rule (App Exceptions) | `{prefix}-alert-app-exceptions` | サーバー例外検出 — Sev2 |
 | Alert Rule (CA Restarts) | `{prefix}-alert-ca-restarts` | コンテナ再起動検出 — Sev2 |
 | Alert Rule (CA Replicas) | `{prefix}-alert-ca-replicas-down` | レプリカ数 = 0 — **Sev0 (Critical)** |
+
+---
+
+### VM 診断データ（Perf テーブル）
+
+DCR により以下のパフォーマンスカウンターが Log Analytics の `Perf` テーブルに収集されている：
+
+- **システムレベル**: CPU（_Total）、メモリ、ディスク、ネットワーク
+- **プロセスレベル**: 各プロセスの CPU 使用率とプロセス ID
+
+```kql
+// CPU 高負荷時にどのプロセスが CPU を消費しているか特定
+Perf
+| where ObjectName == "Process" and CounterName == "% Processor Time"
+| where Computer == "<VM名>"
+| where TimeGenerated > ago(15m)
+| summarize AvgCPU = avg(CounterValue) by InstanceName
+| where AvgCPU > 10
+| order by AvgCPU desc
+```
+
+```kql
+// 特定プロセスの CPU 使用率の時系列
+Perf
+| where ObjectName == "Process" and CounterName == "% Processor Time"
+| where Computer == "<VM名>" and InstanceName == "powershell"
+| where TimeGenerated > ago(1h)
+| summarize AvgCPU = avg(CounterValue) by bin(TimeGenerated, 1m)
+| order by TimeGenerated asc
+```
 
 ---
 

@@ -93,6 +93,8 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
           samplingFrequencyInSeconds: 60
           counterSpecifiers: [
             '\\Processor(_Total)\\% Processor Time'
+            '\\Process(*)\\% Processor Time'
+            '\\Process(*)\\ID Process'
             '\\Memory\\Available MBytes'
             '\\Memory\\% Committed Bytes In Use'
             '\\LogicalDisk(_Total)\\% Free Space'
