@@ -162,6 +162,8 @@ app.get('/', (_req, res) => {
     <div class="stat"><div class="label">DB Pool</div><div class="value" id="pool">-</div></div>
     <div class="stat"><div class="label">Items</div><div class="value" id="items">-</div></div>
     <div class="stat"><div class="label">Success Rate</div><div class="value" id="rate">-</div></div>
+    <div class="stat"><div class="label">Read Avg</div><div class="value" id="readAvg">-</div></div>
+    <div class="stat"><div class="label">Write Avg</div><div class="value" id="writeAvg">-</div></div>
   </div>
   <table>
     <thead><tr><th>Time (JST)</th><th>Type</th><th>Detail</th><th>Duration</th><th>Status</th></tr></thead>
@@ -182,6 +184,18 @@ app.get('/', (_req, res) => {
         const rateEl = document.getElementById('rate');
         rateEl.textContent = pct + '%';
         rateEl.className = 'value ' + (pct >= 80 ? 'ok' : 'err');
+        function calcAvg(type) {
+          const items = d.log.filter(e => e.type === type && e.success && e.durationMs != null);
+          if (items.length === 0) return null;
+          return Math.round(items.reduce((s, e) => s + e.durationMs, 0) / items.length);
+        }
+        const ra = calcAvg('READ'), wa = calcAvg('WRITE');
+        const readEl = document.getElementById('readAvg');
+        readEl.textContent = ra != null ? ra + 'ms' : '-';
+        readEl.className = 'value ' + (ra == null || ra > 2000 ? 'err' : 'ok');
+        const writeEl = document.getElementById('writeAvg');
+        writeEl.textContent = wa != null ? wa + 'ms' : '-';
+        writeEl.className = 'value ' + (wa == null || wa > 2000 ? 'err' : 'ok');
         document.getElementById('log').innerHTML = d.log.map(e => {
           const t = new Date(e.time).toLocaleTimeString('ja-JP', {timeZone:'Asia/Tokyo'});
           const cls = e.success ? 'ok' : 'err';
