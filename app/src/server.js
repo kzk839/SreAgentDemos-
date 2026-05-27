@@ -32,6 +32,23 @@ app.use(express.json());
 const PORT = process.env.PORT || 8080;
 
 // ---------------------------------------------------------------------------
+// Activity log (ring buffer for dashboard)
+// ---------------------------------------------------------------------------
+const ACTIVITY_LOG_MAX = 50;
+const activityLog = [];
+
+function logActivity(type, detail, durationMs, success) {
+  activityLog.unshift({
+    time: new Date().toISOString(),
+    type,
+    detail,
+    durationMs,
+    success,
+  });
+  if (activityLog.length > ACTIVITY_LOG_MAX) activityLog.pop();
+}
+
+// ---------------------------------------------------------------------------
 // SQL connection
 // ---------------------------------------------------------------------------
 const sqlConfig = {
@@ -80,19 +97,15 @@ async function initDb() {
       )
     `);
 
-    // シードデータ: アイテムが 100 件未満なら 10,000 件のサンプルデータを投入
+    // シードデータ: アイテムが 10 件未満なら 100 件のサンプルデータを投入
     const { recordset } = await p.request().query('SELECT COUNT(*) AS cnt FROM Items');
-    if (recordset[0].cnt < 100) {
-      // バッチ INSERT（1,000 件 × 10 バッチ）
-      for (let batch = 0; batch < 10; batch++) {
-        const values = [];
-        for (let i = 0; i < 1000; i++) {
-          const idx = batch * 1000 + i;
-          values.push(`('item-${idx}', 'active', DATEADD(SECOND, -${idx}, SYSUTCDATETIME()))`);
-        }
-        await p.request().query(`INSERT INTO Items (Name, Status, CreatedAt) VALUES ${values.join(',')}`);
+    if (recordset[0].cnt < 10) {
+      const values = [];
+      for (let i = 0; i < 100; i++) {
+        values.push(`('item-${i}', 'active', DATEADD(SECOND, -${i}, SYSUTCDATETIME()))`);
       }
-      console.log('Seeded 10,000 sample items');
+      await p.request().query(`INSERT INTO Items (Name, Status, CreatedAt) VALUES ${values.join(',')}`);
+      console.log('Seeded 100 sample items');
     }
 
     console.log('Database initialised');
@@ -100,6 +113,92 @@ async function initDb() {
     console.error('Database initialisation skipped:', err.message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+app.get('/', (_req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SRE Demo App</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 24px; }
+    h1 { font-size: 1.4rem; margin-bottom: 16px; color: #00d4ff; }
+    .stats { display: flex; gap: 16px; margin-bottom: 20px; }
+    .stat { background: #16213e; border-radius: 8px; padding: 12px 20px; }
+    .stat .label { font-size: 0.75rem; color: #888; text-transform: uppercase; }
+    .stat .value { font-size: 1.5rem; font-weight: bold; }
+    .stat .value.ok { color: #00e676; }
+    .stat .value.err { color: #ff5252; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 8px; border-bottom: 1px solid #333; color: #888; font-weight: 500; }
+    td { padding: 6px 8px; border-bottom: 1px solid #222; }
+    tr.ok td:last-child { color: #00e676; }
+    tr.err td:last-child { color: #ff5252; font-weight: bold; }
+    .type { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
+    .type.READ { background: #1b5e20; }
+    .type.WRITE { background: #e65100; }
+    .type.API { background: #1565c0; }
+    .footer { margin-top: 16px; font-size: 0.75rem; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>⚡ SRE Demo App - Live Dashboard</h1>
+  <div class="stats">
+    <div class="stat"><div class="label">DB Pool</div><div class="value" id="pool">-</div></div>
+    <div class="stat"><div class="label">Items</div><div class="value" id="items">-</div></div>
+    <div class="stat"><div class="label">Success Rate</div><div class="value" id="rate">-</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Time</th><th>Type</th><th>Detail</th><th>Duration</th><th>Status</th></tr></thead>
+    <tbody id="log"></tbody>
+  </table>
+  <div class="footer">Auto-refresh: 3s</div>
+  <script>
+    async function refresh() {
+      try {
+        const r = await fetch('/api/status');
+        const d = await r.json();
+        document.getElementById('pool').textContent = d.dbConnected ? 'Connected' : 'Disconnected';
+        document.getElementById('pool').className = 'value ' + (d.dbConnected ? 'ok' : 'err');
+        document.getElementById('items').textContent = d.itemCount ?? '-';
+        const total = d.log.length || 1;
+        const ok = d.log.filter(e => e.success).length;
+        const pct = Math.round(ok / total * 100);
+        const rateEl = document.getElementById('rate');
+        rateEl.textContent = pct + '%';
+        rateEl.className = 'value ' + (pct >= 80 ? 'ok' : 'err');
+        document.getElementById('log').innerHTML = d.log.map(e => {
+          const t = new Date(e.time).toLocaleTimeString();
+          const cls = e.success ? 'ok' : 'err';
+          const dur = e.durationMs != null ? e.durationMs + 'ms' : '-';
+          const status = e.success ? '\u2705' : '\u274c';
+          return '<tr class="' + cls + '"><td>' + t + '</td><td><span class="type ' + e.type + '">' + e.type + '</span></td><td>' + e.detail + '</td><td>' + dur + '</td><td>' + status + '</td></tr>';
+        }).join('');
+      } catch (e) { console.error('Dashboard fetch error:', e); }
+    }
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>`);
+});
+
+app.get('/api/status', async (_req, res) => {
+  let dbConnected = false;
+  let itemCount = null;
+  try {
+    const p = await getPool();
+    const r = await p.request().query('SELECT COUNT(*) AS cnt FROM Items');
+    dbConnected = true;
+    itemCount = r.recordset[0].cnt;
+  } catch (_) { /* DB unreachable */ }
+  res.json({ dbConnected, itemCount, log: activityLog });
+});
 
 // ---------------------------------------------------------------------------
 // Health / Readiness
@@ -214,11 +313,15 @@ app.delete('/api/items/:id', async (req, res) => {
 function scheduleRead() {
   const delay = (Math.floor(Math.random() * 21) + 10) * 1000;
   setTimeout(async () => {
+    const start = Date.now();
     try {
       const p = await getPool();
-      await p.request().query('SELECT TOP 5 * FROM Items ORDER BY NEWID()');
+      const count = Math.floor(Math.random() * 10) + 1;
+      const { recordset } = await p.request().query(`SELECT TOP ${count} * FROM Items ORDER BY NEWID()`);
+      logActivity('READ', `${recordset.length} items fetched`, Date.now() - start, true);
     } catch (err) {
       console.error('BG read error:', err.message);
+      logActivity('READ', err.message, null, false);
     }
     scheduleRead();
   }, delay);
@@ -228,6 +331,7 @@ function scheduleRead() {
 function scheduleWrite() {
   const delay = (Math.floor(Math.random() * 31) + 15) * 1000;
   setTimeout(async () => {
+    const start = Date.now();
     try {
       const p = await getPool();
       const { recordset } = await p.request()
@@ -239,9 +343,11 @@ function scheduleWrite() {
           .input('id', sql.Int, item.Id)
           .input('status', sql.NVarChar(50), newStatus)
           .query('UPDATE Items SET Status = @status WHERE Id = @id');
+        logActivity('WRITE', `Item #${item.Id} → ${newStatus}`, Date.now() - start, true);
       }
     } catch (err) {
       console.error('BG write error:', err.message);
+      logActivity('WRITE', err.message, null, false);
     }
     scheduleWrite();
   }, delay);

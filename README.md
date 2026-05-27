@@ -24,8 +24,10 @@ SreAgentDemos/
 │   ├── sre-agent.bicep                 # SRE Agent 定義
 │   ├── sre-agent.bicepparam            # SRE Agent パラメータ
 │   ├── prompts/                        # SRE Agent instruction / タスク
-│   │   ├── common.md                   # インシデント対応ワークフロー（instruction）
-│   │   └── health-check.md             # ヘルスチェック（スケジュールタスク用）
+│   │   ├── incident-auto.md            # インシデント対応ワークフロー（自立モード用 instruction）
+│   │   ├── incident-review.md          # インシデント対応ワークフロー（レビューモード用 instruction）
+│   │   ├── health-check.md             # ヘルスチェック（スケジュールタスク用）
+│   │   └── cost-analysis.md            # コスト分析（スケジュールタスク用）
 │   └── modules/
 │       ├── vnet.bicep                  # VNet モジュール
 │       ├── vm.bicep                    # VM モジュール（AMA + DCR 込み）
@@ -34,6 +36,7 @@ SreAgentDemos/
 │       ├── containerRegistry.bicep     # ACR + Private Endpoint
 │       ├── sqlDatabase.bicep           # Azure SQL Server + DB + Private Endpoint
 │       ├── privateDnsZone.bicep        # Private DNS Zone + VNet Link
+│       ├── vnetFlowLogs.bicep          # VNet Flow Logs (Traffic Analytics)
 │       ├── actionGroup.bicep           # アクショングループ
 │       └── alertRules.bicep            # アラートルール
 ├── app/
@@ -52,6 +55,8 @@ SreAgentDemos/
 
 | エンドポイント | 説明 |
 |----------------|------|
+| `GET /` | ライブダッシュボード（DB 接続状態、直近の操作履歴、3秒自動更新） |
+| `GET /api/status` | ダッシュボード用 JSON API（DB 接続状態、アイテム数、操作履歴） |
 | `GET /health` | ヘルスチェック |
 | `GET /ready` | DB 接続確認付きレディネスチェック |
 | `GET /api/items` | Items テーブルから最新 50 件を取得 |
@@ -64,10 +69,16 @@ SreAgentDemos/
 
 | 操作 | 間隔 | 内容 |
 |------|------|------|
-| READ | 10〜30秒（ランダム） | Items テーブルからランダムに 5 件取得 |
+| READ | 10〜30秒（ランダム） | Items テーブルからランダムに 1〜10 件取得 |
 | WRITE | 15〜45秒（ランダム） | ランダムな 1 件の Status を `Active` ↔ `Processed` で切り替え |
+| Pool リセット | 60秒固定 | コネクションプールをクローズして再接続（資格情報変更の検知を早める） |
 
+操作履歴はメモリ上のリングバッファ（最大 50 件）に保持され、ダッシュボード（`GET /`）でリアルタイムに確認できます。
 App Insights の `dependencies` テーブルに SQL テレメトリが継続的に蓄積されるため、DB 障害時にエラーが自動的に記録されます。
+
+### シードデータ
+
+初回起動時、Items テーブルが 10 件未満の場合に 100 件のサンプルデータを自動投入します。
 
 ### バグシナリオ
 
