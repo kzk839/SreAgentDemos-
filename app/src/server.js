@@ -107,15 +107,15 @@ async function initDb() {
       )
     `);
 
-    // シードデータ: アイテムが 100 件未満なら 1,000 件のサンプルデータを投入
+    // シードデータ: アイテムが 10 件未満なら 100 件のサンプルデータを投入
     const { recordset } = await p.request().query('SELECT COUNT(*) AS cnt FROM Items');
-    if (recordset[0].cnt < 100) {
+    if (recordset[0].cnt < 10) {
       const values = [];
-      for (let i = 0; i < 1000; i++) {
+      for (let i = 0; i < 100; i++) {
         values.push(`('item-${i}', 'active', DATEADD(SECOND, -${i}, SYSUTCDATETIME()))`);
       }
       await p.request().query(`INSERT INTO Items (Name, Status, CreatedAt) VALUES ${values.join(',')}`);
-      console.log('Seeded 1,000 sample items');
+      console.log('Seeded 100 sample items');
     }
 
     console.log('Database initialised');
