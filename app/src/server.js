@@ -57,6 +57,8 @@ const sqlConfig = {
 };
 
 let pool = null;
+let poolUseCount = 0;
+const POOL_RESET_INTERVAL = 10; // 10回使用ごとにプールをリセット
 
 async function getPool() {
   if (!pool) {
@@ -64,22 +66,30 @@ async function getPool() {
       throw new Error('SQL_CONNECTION_STRING is not configured');
     }
     pool = await sql.connect(sqlConfig.connectionString);
+    poolUseCount = 0;
   }
-  return pool;
+  poolUseCount++;
+  if (poolUseCount >= POOL_RESET_INTERVAL) {
+    const oldPool = pool;
+    pool = null;
+    poolUseCount = 0;
+    oldPool.close().catch(err => console.error('Pool close error:', err.message));
+  }
+  return pool || await sql.connect(sqlConfig.connectionString);
 }
 
-// 1分ごとにコネクションプールをリセット（資格情報変更の検知を早めるため）
+// poolUseCount 未到達でも長時間アイドル時に備えて、5分ごとにもリセット
 setInterval(async () => {
   if (pool) {
     const oldPool = pool;
-    pool = null;  // 先に null にして、新しいリクエストは新規プールを使う
+    pool = null;
     try {
       await oldPool.close();
     } catch (err) {
       console.error('Pool close error:', err.message);
     }
   }
-}, 60000);
+}, 300000); // 5分
 
 // ---------------------------------------------------------------------------
 // DB initialisation (create table if not exists)
@@ -97,15 +107,15 @@ async function initDb() {
       )
     `);
 
-    // シードデータ: アイテムが 10 件未満なら 100 件のサンプルデータを投入
+    // シードデータ: アイテムが 100 件未満なら 1,000 件のサンプルデータを投入
     const { recordset } = await p.request().query('SELECT COUNT(*) AS cnt FROM Items');
-    if (recordset[0].cnt < 10) {
+    if (recordset[0].cnt < 100) {
       const values = [];
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < 1000; i++) {
         values.push(`('item-${i}', 'active', DATEADD(SECOND, -${i}, SYSUTCDATETIME()))`);
       }
       await p.request().query(`INSERT INTO Items (Name, Status, CreatedAt) VALUES ${values.join(',')}`);
-      console.log('Seeded 100 sample items');
+      console.log('Seeded 1,000 sample items');
     }
 
     console.log('Database initialised');
@@ -154,10 +164,10 @@ app.get('/', (_req, res) => {
     <div class="stat"><div class="label">Success Rate</div><div class="value" id="rate">-</div></div>
   </div>
   <table>
-    <thead><tr><th>Time</th><th>Type</th><th>Detail</th><th>Duration</th><th>Status</th></tr></thead>
+    <thead><tr><th>Time (JST)</th><th>Type</th><th>Detail</th><th>Duration</th><th>Status</th></tr></thead>
     <tbody id="log"></tbody>
   </table>
-  <div class="footer">Auto-refresh: 3s</div>
+  <div class=\"footer\">Next refresh in <span id=\"countdown\">3</span>s</div>
   <script>
     async function refresh() {
       try {
@@ -173,7 +183,7 @@ app.get('/', (_req, res) => {
         rateEl.textContent = pct + '%';
         rateEl.className = 'value ' + (pct >= 80 ? 'ok' : 'err');
         document.getElementById('log').innerHTML = d.log.map(e => {
-          const t = new Date(e.time).toLocaleTimeString();
+          const t = new Date(e.time).toLocaleTimeString('ja-JP', {timeZone:'Asia/Tokyo'});
           const cls = e.success ? 'ok' : 'err';
           const dur = e.durationMs != null ? e.durationMs + 'ms' : '-';
           const status = e.success ? '\u2705' : '\u274c';
@@ -181,8 +191,14 @@ app.get('/', (_req, res) => {
         }).join('');
       } catch (e) { console.error('Dashboard fetch error:', e); }
     }
+    let countdown = 3;
+    function tick() {
+      document.getElementById('countdown').textContent = countdown;
+      if (countdown <= 0) { refresh(); countdown = 3; }
+      else { countdown--; }
+    }
     refresh();
-    setInterval(refresh, 3000);
+    setInterval(tick, 1000);
   </script>
 </body>
 </html>`);
@@ -228,12 +244,11 @@ app.get('/ready', async (_req, res) => {
 // アラート: app-exceptions, app-failed-requests
 // 調査ポイント: App Insights のスタックトレース、デプロイタイミングとの相関
 // ---------------------------------------------------------------------------
-// app.get('/api/items', (_req, _res) => {
+// async function fetchItems() {
 //   // 開発者の意図しない undefined 参照（レビュー漏れを想定）
 //   const config = undefined;
-//   const items = config.getItems();  // TypeError: Cannot read properties of undefined
-//   _res.json(items);
-// });
+//   return config.getItems();  // TypeError: Cannot read properties of undefined
+// }
 // ===========================================================================
 
 // ===========================================================================
@@ -242,33 +257,33 @@ app.get('/ready', async (_req, res) => {
 // アラート: app-slow-response
 // 調査ポイント: App Insights 依存関係テレメトリでの SQL 呼び出し数急増、デプロイ相関
 // ---------------------------------------------------------------------------
-// app.get('/api/items', async (req, res) => {
-//   try {
-//     const p = await getPool();
-//     // N+1 クエリ: 全件取得後に1件ずつ再取得（よくあるORMの誤用パターン）
-//     const { recordset: allItems } = await p.request()
-//       .query('SELECT Id FROM Items ORDER BY CreatedAt DESC');
-//     const items = [];
-//     for (const row of allItems) {
-//       const detail = await p.request()
-//         .input('id', row.Id)
-//         .query('SELECT * FROM Items WHERE Id = @id');
-//       items.push(detail.recordset[0]);
-//     }
-//     res.json(items);
-//   } catch (err) {
-//     console.error('GET /api/items error:', err);
-//     res.status(500).json({ error: 'Internal server error' });
+// async function fetchItems() {
+//   const p = await getPool();
+//   // N+1 クエリ: 全件取得後に1件ずつ再取得（よくあるORMの誤用パターン）
+//   const { recordset: allItems } = await p.request()
+//     .query('SELECT Id FROM Items ORDER BY CreatedAt DESC');
+//   const items = [];
+//   for (const row of allItems) {
+//     const detail = await p.request()
+//       .input('id', row.Id)
+//       .query('SELECT * FROM Items WHERE Id = @id');
+//     items.push(detail.recordset[0]);
 //   }
-// });
+//   return items;
+// }
 // ===========================================================================
 
 // 正常版（バグシナリオ使用時はこの関数をコメントアウトしてください）
+async function fetchItems() {
+  const p = await getPool();
+  const result = await p.request().query('SELECT TOP 50 * FROM Items ORDER BY CreatedAt DESC');
+  return result.recordset;
+}
+
 app.get('/api/items', async (_req, res) => {
   try {
-    const p = await getPool();
-    const result = await p.request().query('SELECT TOP 50 * FROM Items ORDER BY CreatedAt DESC');
-    res.json(result.recordset);
+    const items = await fetchItems();
+    res.json(items);
   } catch (err) {
     console.error('GET /api/items error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -309,16 +324,14 @@ app.delete('/api/items/:id', async (req, res) => {
 // Background worker: 業務処理シミュレーション（ランダム間隔で READ / WRITE）
 // ---------------------------------------------------------------------------
 
-// READ: 10〜30秒ごとにランダムなアイテムを取得
+// READ: 10〜30秒ごとに fetchItems() を呼び出し（バグシナリオの影響を受ける）
 function scheduleRead() {
   const delay = (Math.floor(Math.random() * 21) + 10) * 1000;
   setTimeout(async () => {
     const start = Date.now();
     try {
-      const p = await getPool();
-      const count = Math.floor(Math.random() * 10) + 1;
-      const { recordset } = await p.request().query(`SELECT TOP ${count} * FROM Items ORDER BY NEWID()`);
-      logActivity('READ', `${recordset.length} items fetched`, Date.now() - start, true);
+      const items = await fetchItems();
+      logActivity('READ', `${items.length} items fetched`, Date.now() - start, true);
     } catch (err) {
       console.error('BG read error:', err.message);
       logActivity('READ', err.message, null, false);
