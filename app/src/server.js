@@ -338,13 +338,15 @@ app.delete('/api/items/:id', async (req, res) => {
 // Background worker: 業務処理シミュレーション（ランダム間隔で READ / WRITE）
 // ---------------------------------------------------------------------------
 
-// READ: 10〜30秒ごとに fetchItems() を呼び出し（バグシナリオの影響を受ける）
+// READ: 10〜30秒ごとに自身の /api/items を HTTP で呼び出し（App Insights に記録される）
 function scheduleRead() {
   const delay = (Math.floor(Math.random() * 21) + 10) * 1000;
   setTimeout(async () => {
     const start = Date.now();
     try {
-      const items = await fetchItems();
+      const res = await fetch(`http://localhost:${PORT}/api/items`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const items = await res.json();
       logActivity('READ', `${items.length} items fetched`, Date.now() - start, true);
     } catch (err) {
       console.error('BG read error:', err.message);
