@@ -269,7 +269,7 @@ resource alertAppResponseTime 'Microsoft.Insights/scheduledQueryRules@2023-03-15
   name: '${prefix}-alert-app-slow-response'
   location: location
   properties: {
-    description: 'Fires when average server response time exceeds 5 seconds (excluding health probes)'
+    description: 'Fires when slow requests (>5s) are detected (excluding health probes and status)'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT5M'
@@ -283,9 +283,11 @@ resource alertAppResponseTime 'Microsoft.Insights/scheduledQueryRules@2023-03-15
           query: '''
             requests
             | where name !in ("GET /health", "GET /ready")
-            | where url !has "/health" and url !has "/ready"
-            | summarize avgDuration = avg(duration) by bin(timestamp, 5m)
-            | where avgDuration > 5000
+            | where url !has "/health" and url !has "/ready" and url !has "/api/status"
+            | where duration > 5000
+            | where success == true
+            | summarize slowCount = count() by bin(timestamp, 5m)
+            | where slowCount > 3
           '''
           timeAggregation: 'Count'
           operator: 'GreaterThan'
