@@ -51,6 +51,19 @@ async function getPool() {
   return pool;
 }
 
+// 1分ごとにコネクションプールをリセット（資格情報変更の検知を早めるため）
+setInterval(async () => {
+  if (pool) {
+    const oldPool = pool;
+    pool = null;  // 先に null にして、新しいリクエストは新規プールを使う
+    try {
+      await oldPool.close();
+    } catch (err) {
+      console.error('Pool close error:', err.message);
+    }
+  }
+}, 60000);
+
 // ---------------------------------------------------------------------------
 // DB initialisation (create table if not exists)
 // ---------------------------------------------------------------------------
