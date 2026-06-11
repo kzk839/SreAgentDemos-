@@ -205,11 +205,12 @@ az deployment group create `
   --parameters infra/main.bicepparam
 
 # 4. サンプルアプリのコンテナイメージをビルド & プッシュ
-az acr build --registry <acr-name> --image sre-demo-app:latest ./app/
+$tag = git rev-parse --short HEAD
+az acr build --registry <acr-name> --image sre-demo-app:$tag ./app/
 
 # 5. Container App のイメージを更新
 az containerapp update --name sre-demo-app --resource-group rg-sre-demo `
-  --image <acr-name>.azurecr.io/sre-demo-app:latest
+  --image <acr-name>.azurecr.io/sre-demo-app:$tag
 ```
 
 ---

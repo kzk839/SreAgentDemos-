@@ -70,8 +70,43 @@ if ($Tags.Count -gt 0) {
 }
 az @rgArgs
 
-# --- 2. Bicep デプロイ ---
-Write-Host "`n[2/7] インフラデプロイ（約 20〜30 分かかります）..." -ForegroundColor Yellow
+# --- 2a. Log Analytics ワークスペースを先行作成 ---
+# DCR が参照する Microsoft-Perf / Microsoft-Event テーブルはワークスペース作成直後には
+# 利用できないため、先にワークスペースを作成しテーブルの準備を待つ。
+$lawName = "sre-demo-law"
+Write-Host "`n[2a/7] Log Analytics ワークスペースを先行作成: $lawName" -ForegroundColor Yellow
+az monitor log-analytics workspace create `
+    --resource-group $ResourceGroup `
+    --workspace-name $lawName `
+    --location $Location `
+    --retention-time 30 `
+    --sku PerGB2018 `
+    -o none 2>$null
+
+Write-Host "  DCR テーブル (Microsoft-Perf / Microsoft-Event) の準備を待機中..." -ForegroundColor DarkGray
+$maxRetries = 12
+$retryInterval = 10
+for ($i = 1; $i -le $maxRetries; $i++) {
+    $tables = az monitor log-analytics workspace table list `
+        --resource-group $ResourceGroup `
+        --workspace-name $lawName `
+        --query "[?name=='Perf' || name=='Event'].name" `
+        -o tsv 2>$null
+    $tableList = ($tables -split "`n" | Where-Object { $_ -match '\S' })
+    if ($tableList.Count -ge 2) {
+        Write-Host "  テーブル準備完了 ($($tableList -join ', '))" -ForegroundColor Green
+        break
+    }
+    if ($i -eq $maxRetries) {
+        Write-Warning "テーブルの準備確認がタイムアウトしました。デプロイを続行します。"
+        break
+    }
+    Write-Host "  待機中... ($i/$maxRetries)" -ForegroundColor DarkGray
+    Start-Sleep -Seconds $retryInterval
+}
+
+# --- 2b. Bicep デプロイ ---
+Write-Host "`n[2b/7] インフラデプロイ（約 20〜30 分かかります）..." -ForegroundColor Yellow
 $deployResult = az deployment group create `
     --resource-group $ResourceGroup `
     --template-file infra/main.bicep `
@@ -94,7 +129,10 @@ Write-Host "  Container App: $($deployResult.containerAppFqdn.value)" -Foregroun
 
 # --- 3. ACR にイメージビルド ---
 Write-Host "`n[3/7] コンテナイメージのビルド & ACR プッシュ..." -ForegroundColor Yellow
-az acr build --registry $acrName --image sre-demo-app:latest ./app/
+$imageTag = (git rev-parse --short HEAD)
+if (-not $imageTag) { $imageTag = [DateTime]::Now.ToString('yyyyMMddHHmmss') }
+Write-Host "  イメージタグ: $imageTag" -ForegroundColor DarkGray
+az acr build --registry $acrName --image sre-demo-app:$imageTag ./app/
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "ACR ビルドに失敗しました。"
@@ -107,7 +145,7 @@ $updateArgs = @(
     "containerapp", "update",
     "--name", $appName,
     "--resource-group", $ResourceGroup,
-    "--image", "$acrLoginServer/sre-demo-app:latest"
+    "--image", "$acrLoginServer/sre-demo-app:$imageTag"
 )
 
 az @updateArgs -o none
