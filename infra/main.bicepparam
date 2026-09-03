@@ -7,3 +7,6 @@ param vmSize = 'Standard_B2s_v2'
 param sqlAdminUsername = 'sqladmin'
 param sqlAdminPassword = readEnvironmentVariable('SRE_SQL_PASSWORD')
 param notificationEmail = readEnvironmentVariable('SRE_NOTIFICATION_EMAIL')
+param controlResourceGroupName = readEnvironmentVariable('SRE_CONTROL_RESOURCE_GROUP', '')
+param faultStorageAccountName = readEnvironmentVariable('SRE_FAULT_STORAGE_ACCOUNT', '')
+param faultEnvironmentId = readEnvironmentVariable('SRE_FAULT_ENVIRONMENT_ID', '')

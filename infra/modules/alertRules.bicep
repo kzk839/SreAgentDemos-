@@ -69,13 +69,13 @@ resource alertVmCpu 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' 
   }
 }
 
-// VM Available Memory < 500 MB
+// VM committed memory > 80% averaged over 5 minutes
 resource alertVmMemory 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
   name: '${prefix}-alert-vm-memory-low'
   location: location
   properties: {
-    displayName: 'VM Available Memory < 500MB'
-    description: 'Fires when any VM available memory drops below 500 MB'
+    displayName: 'VM Committed Memory > 80%'
+    description: 'Fires when any VM committed memory exceeds 80% averaged over 5 minutes'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT5M'
@@ -88,9 +88,9 @@ resource alertVmMemory 'Microsoft.Insights/scheduledQueryRules@2023-03-15-previe
         {
           query: '''
             Perf
-            | where ObjectName == "Memory" and CounterName == "Available MBytes"
-            | summarize AvgMem = avg(CounterValue) by Computer, bin(TimeGenerated, 5m)
-            | where AvgMem < 500
+            | where ObjectName == "Memory" and CounterName == "% Committed Bytes In Use"
+            | summarize AvgCommittedMemory = avg(CounterValue) by Computer, bin(TimeGenerated, 5m)
+            | where AvgCommittedMemory > 80
           '''
           timeAggregation: 'Count'
           operator: 'GreaterThan'
@@ -116,7 +116,7 @@ resource alertVmDisk 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview'
   location: location
   properties: {
     displayName: 'VM Disk Free Space < 10%'
-    description: 'Fires when any VM disk free space drops below 10%'
+    description: 'Fires when the VM F: fault disk free space drops below 10%'
     severity: 1
     enabled: true
     evaluationFrequency: 'PT5M'
@@ -129,9 +129,52 @@ resource alertVmDisk 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview'
         {
           query: '''
             Perf
-            | where ObjectName == "LogicalDisk" and CounterName == "% Free Space" and InstanceName == "_Total"
+            | where ObjectName == "LogicalDisk" and CounterName == "% Free Space" and InstanceName == "F:"
             | summarize AvgFree = avg(CounterValue) by Computer, bin(TimeGenerated, 5m)
             | where AvgFree < 10
+          '''
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [
+        actionGroupId
+      ]
+    }
+  }
+}
+
+// VM Azure Monitor Agent heartbeat missing for 5 minutes
+resource alertVmHeartbeat 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
+  name: '${prefix}-alert-vm-heartbeat-missing'
+  location: location
+  properties: {
+    displayName: 'VM Heartbeat missing > 5 minutes'
+    description: 'Fires when a VM known to the workspace has not sent an Azure Monitor Agent heartbeat for more than 5 minutes'
+    severity: 1
+    enabled: true
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT5M'
+    overrideQueryTimeRange: 'P1D'
+    scopes: [
+      logAnalyticsWorkspaceId
+    ]
+    criteria: {
+      allOf: [
+        {
+          query: '''
+            Heartbeat
+            | where TimeGenerated > ago(1d)
+            | summarize LastHeartbeat = max(TimeGenerated) by Computer, _ResourceId
+            | extend MinutesSinceLastHeartbeat = datetime_diff('minute', now(), LastHeartbeat)
+            | where MinutesSinceLastHeartbeat > 5
           '''
           timeAggregation: 'Count'
           operator: 'GreaterThan'
@@ -248,6 +291,41 @@ resource alertSqlConnFail 'Microsoft.Insights/metricAlerts@2018-03-01' = {
           operator: 'GreaterThan'
           threshold: 5
           timeAggregation: 'Total'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: [
+      {
+        actionGroupId: actionGroupId
+      }
+    ]
+  }
+}
+
+// SQL Workers Percentage > 60% sustained for 5 minutes
+resource alertSqlWorkers 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: '${prefix}-alert-sql-workers-high'
+  location: 'global'
+  properties: {
+    description: 'Fires when SQL Database worker usage remains above 60% for 5 minutes'
+    severity: 2
+    enabled: true
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    scopes: [
+      sqlDatabaseId
+    ]
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'WorkersPercentageHigh'
+          metricName: 'workers_percent'
+          metricNamespace: 'Microsoft.Sql/servers/databases'
+          operator: 'GreaterThan'
+          threshold: 60
+          timeAggregation: 'Minimum'
           criterionType: 'StaticThresholdCriterion'
         }
       ]
@@ -440,6 +518,76 @@ resource alertCaReplicasDown 'Microsoft.Insights/metricAlerts@2018-03-01' = {
           operator: 'LessThanOrEqual'
           threshold: 0
           timeAggregation: 'Maximum'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: [
+      {
+        actionGroupId: actionGroupId
+      }
+    ]
+  }
+}
+
+// Container App CPU usage > 80% averaged over 5 minutes
+resource alertCaCpu 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: '${prefix}-alert-ca-cpu-high'
+  location: 'global'
+  properties: {
+    description: 'Fires when Container App CPU usage exceeds 80% averaged over 5 minutes'
+    severity: 2
+    enabled: true
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    scopes: [
+      containerAppId
+    ]
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'CpuPercentageHigh'
+          metricName: 'CpuPercentage'
+          metricNamespace: 'Microsoft.App/containerapps'
+          operator: 'GreaterThan'
+          threshold: 80
+          timeAggregation: 'Average'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: [
+      {
+        actionGroupId: actionGroupId
+      }
+    ]
+  }
+}
+
+// Container App memory usage > 80% averaged over 5 minutes
+resource alertCaMemory 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: '${prefix}-alert-ca-memory-high'
+  location: 'global'
+  properties: {
+    description: 'Fires when Container App memory usage exceeds 80% averaged over 5 minutes'
+    severity: 2
+    enabled: true
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    scopes: [
+      containerAppId
+    ]
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'MemoryPercentageHigh'
+          metricName: 'MemoryPercentage'
+          metricNamespace: 'Microsoft.App/containerapps'
+          operator: 'GreaterThan'
+          threshold: 80
+          timeAggregation: 'Average'
           criterionType: 'StaticThresholdCriterion'
         }
       ]

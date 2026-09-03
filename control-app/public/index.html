@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SRE Fault Control</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/vendor/chart.umd.js" defer></script>
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="eyebrow">SRE DEMO</span><h1>Fault Control</h1></div>
+    <div class="header-actions"><span id="updated">Waiting for data</span><button id="reset" class="secondary">Reset environment</button><button id="emergency" class="danger">Emergency stop</button></div>
+  </header>
+  <main>
+    <section class="filters" aria-label="Dashboard filters">
+      <label>Window<select id="window"><option value="5m">5 minutes</option><option value="15m" selected>15 minutes</option><option value="1h">1 hour</option></select></label>
+      <label>Bucket<select id="bucket"><option value="10s">10 seconds</option><option value="30s" selected>30 seconds</option><option value="1m">1 minute</option></select></label>
+      <label>Source<select id="source"><option value="all">All</option><option value="AUTO">AUTO</option><option value="USER">USER</option></select></label>
+      <label>Operation<select id="type"><option value="all">All</option><option>READ</option><option>CREATE</option><option>UPDATE</option><option>DELETE</option></select></label>
+    </section>
+    <section class="metrics" aria-label="Workload summary">
+      <article><span>Success</span><strong id="success">0</strong></article>
+      <article><span>Failure</span><strong id="failure">0</strong></article>
+      <article><span>Success rate</span><strong id="rate">--</strong></article>
+    </section>
+    <section class="chart-panel"><div class="section-heading"><div><span class="eyebrow">WORKLOAD</span><h2>Activity health</h2></div><span class="legend-note">Counts and rate by time bucket</span></div><div class="chart-wrap"><canvas id="activity-chart"></canvas></div></section>
+    <section class="fault-section"><div class="section-heading"><div><span class="eyebrow">CONTROL PLANE</span><h2>Fault catalog</h2></div><span id="fault-message" role="status"></span></div><div id="faults" class="fault-list"></div></section>
+  </main>
+  <dialog id="confirm"><form method="dialog"><h2>Start fault?</h2><p id="confirm-copy"></p><label id="delay-field">Delay (ms)<input id="delay" type="number" min="0" max="10000" value="3000"></label><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button value="confirm" class="danger">Start fault</button></div></form></dialog>
+</body>
+</html>

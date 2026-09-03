@@ -1,45 +1,19 @@
 <#
 .SYNOPSIS
-  SRE Agent Demo 環境を一括デプロイ（インフラ + アプリ + SRE Agent）
+  Control/Demo インフラと空の参加者用 SRE Agent RG をデプロイ
 
-.DESCRIPTION
-  1. リソースグループ作成（インフラ用 + SRE Agent 用）
-  2. Bicep でインフラデプロイ
-  3. ACR にコンテナイメージをビルド & プッシュ
-  4. Container App のイメージを更新
-  5. SRE Agent デプロイ + RBAC 付与
-  6. GitHub Actions OIDC 設定（オプション）
-  ※ DB テーブルはアプリ起動時に自動作成されます
-
-.PARAMETER ResourceGroup
-  インフラ用リソースグループ名（デフォルト: rg-sre-demo）
-
-.PARAMETER Location
-  インフラのリージョン（デフォルト: japaneast）
-
-.PARAMETER SreAgentResourceGroup
-  SRE Agent 用リソースグループ名（デフォルト: rg-sre-agent）
-
-.PARAMETER SreAgentLocation
-  SRE Agent のリージョン（eastus2, swedencentral, australiaeast）
-
-.PARAMETER GitHubRepo
-  GitHub リポジトリ（owner/repo 形式）。省略時は git remote から自動検出
-
+.PARAMETER ControlEntraClientId
+  Control App の Entra クライアント ID。既定値は SRE_CONTROL_ENTRA_CLIENT_ID
 .PARAMETER EnableOidc
-  GitHub Actions OIDC 設定を有効化（デフォルト: 無効）
-
-.EXAMPLE
-  ./scripts/deploy.ps1
-  ./scripts/deploy.ps1 -ResourceGroup "rg-my-demo" -Location "eastus"
-  ./scripts/deploy.ps1 -EnableOidc
+  Demo ACR/App 用 GitHub Actions OIDC 設定を有効化
 #>
-
 param(
     [string]$ResourceGroup = "rg-sre-demo",
     [string]$Location = "japaneast",
     [string]$SreAgentResourceGroup = "rg-sre-agent",
     [string]$SreAgentLocation = "eastus2",
+    [string]$ControlPrefix = "srectrl",
+    [string]$ControlEntraClientId = [Environment]::GetEnvironmentVariable("SRE_CONTROL_ENTRA_CLIENT_ID"),
     [hashtable]$Tags = @{},
     [string]$GitHubRepo = "",
     [switch]$EnableOidc
@@ -47,322 +21,280 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-AzCommand {
+    param([string[]]$Arguments, [string]$FailureMessage)
+    $output = & az @Arguments
+    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
+    return $output
+}
+
+function Invoke-GhCommand {
+    param([string[]]$Arguments, [string]$FailureMessage)
+    & gh @Arguments
+    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
+}
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " SRE Agent Demo - Deploy" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# --- 環境変数チェック ---
-$requiredEnvVars = @("SRE_ADMIN_PASSWORD", "SRE_SQL_PASSWORD", "SRE_NOTIFICATION_EMAIL")
-foreach ($var in $requiredEnvVars) {
-    if (-not [Environment]::GetEnvironmentVariable($var)) {
-        Write-Error "環境変数 '$var' が設定されていません。"
-        exit 1
+foreach ($variableName in @("SRE_ADMIN_PASSWORD", "SRE_SQL_PASSWORD", "SRE_NOTIFICATION_EMAIL")) {
+    if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($variableName))) {
+        throw "環境変数 '$variableName' が設定されていません。"
     }
+}
+if ([string]::IsNullOrWhiteSpace($ControlEntraClientId)) {
+    throw "環境変数 SRE_CONTROL_ENTRA_CLIENT_ID または -ControlEntraClientId を指定してください。"
+}
+if ($ControlPrefix -notmatch '^[a-z0-9]{2,10}$') {
+    throw "-ControlPrefix は小文字英数字 2～10 文字で指定してください。"
+}
+if ($ResourceGroup -eq $SreAgentResourceGroup) {
+    throw "-ResourceGroup と -SreAgentResourceGroup には異なる名前を指定してください。"
 }
 
 # --- 1. リソースグループ作成 ---
-Write-Host "`n[1/7] リソースグループ作成: $ResourceGroup ($Location)" -ForegroundColor Yellow
-$rgArgs = @("group", "create", "--name", $ResourceGroup, "--location", $Location, "-o", "none")
+Write-Host "`n[1/8] リソースグループを作成..." -ForegroundColor Yellow
+$tagArguments = @()
 if ($Tags.Count -gt 0) {
-    $tagStrings = $Tags.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
-    $rgArgs += @("--tags") + $tagStrings
-    Write-Host "  タグ: $($tagStrings -join ', ')" -ForegroundColor DarkGray
+    $tagArguments = @("--tags") + @($Tags.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
 }
-az @rgArgs
+Invoke-AzCommand (@("group", "create", "--name", $ResourceGroup, "--location", $Location, "-o", "none") + $tagArguments) `
+    "インフラ RG '$ResourceGroup' の作成に失敗しました。" | Out-Null
+Invoke-AzCommand (@("group", "create", "--name", $SreAgentResourceGroup, "--location", $SreAgentLocation, "-o", "none") + $tagArguments) `
+    "空の Agent RG '$SreAgentResourceGroup' の作成に失敗しました。" | Out-Null
+Write-Host "  インフラ RG: $ResourceGroup ($Location)" -ForegroundColor Green
+Write-Host "  空の Agent RG: $SreAgentResourceGroup ($SreAgentLocation)" -ForegroundColor Green
 
-# --- 2a. Log Analytics ワークスペースを先行作成 ---
-# DCR が参照する Microsoft-Perf / Microsoft-Event テーブルはワークスペース作成直後には
-# 利用できないため、先にワークスペースを作成しテーブルの準備を待つ。
+$account = Invoke-AzCommand @("account", "show", "-o", "json") `
+    "Azure アカウント情報を取得できませんでした。az login を確認してください。" | ConvertFrom-Json
+$subscriptionId = $account.id
+$tenantId = $account.tenantId
+$entraIssuer = "https://login.microsoftonline.com/$tenantId/v2.0"
+
+# --- 2. Demo 用 Log Analytics を先行作成 ---
 $lawName = "sre-demo-law"
-Write-Host "`n[2a/7] Log Analytics ワークスペースを先行作成: $lawName" -ForegroundColor Yellow
-az monitor log-analytics workspace create `
-    --resource-group $ResourceGroup `
-    --workspace-name $lawName `
-    --location $Location `
-    --retention-time 30 `
-    --sku PerGB2018 `
-    -o none 2>$null
+Write-Host "`n[2/8] Log Analytics ワークスペースを先行作成: $lawName" -ForegroundColor Yellow
+Invoke-AzCommand @(
+    "monitor", "log-analytics", "workspace", "create",
+    "--resource-group", $ResourceGroup, "--workspace-name", $lawName,
+    "--location", $Location, "--retention-time", "30", "--sku", "PerGB2018", "-o", "none"
+) "Log Analytics ワークスペースの作成に失敗しました。" | Out-Null
 
 Write-Host "  DCR テーブル (Microsoft-Perf / Microsoft-Event) の準備を待機中..." -ForegroundColor DarkGray
-$maxRetries = 12
-$retryInterval = 10
-for ($i = 1; $i -le $maxRetries; $i++) {
-    $tables = az monitor log-analytics workspace table list `
-        --resource-group $ResourceGroup `
-        --workspace-name $lawName `
-        --query "[?name=='Perf' || name=='Event'].name" `
-        -o tsv 2>$null
-    $tableList = ($tables -split "`n" | Where-Object { $_ -match '\S' })
+for ($retry = 1; $retry -le 12; $retry++) {
+    $tables = @(Invoke-AzCommand @(
+        "monitor", "log-analytics", "workspace", "table", "list",
+        "--resource-group", $ResourceGroup, "--workspace-name", $lawName,
+        "--query", "[?name=='Perf' || name=='Event'].name", "-o", "tsv"
+    ) "Log Analytics のテーブル状態を取得できませんでした。")
+    $tableList = @($tables | Where-Object { $_ -match '\S' })
     if ($tableList.Count -ge 2) {
         Write-Host "  テーブル準備完了 ($($tableList -join ', '))" -ForegroundColor Green
         break
     }
-    if ($i -eq $maxRetries) {
+    if ($retry -eq 12) {
         Write-Warning "テーブルの準備確認がタイムアウトしました。デプロイを続行します。"
         break
     }
-    Write-Host "  待機中... ($i/$maxRetries)" -ForegroundColor DarkGray
-    Start-Sleep -Seconds $retryInterval
+    Write-Host "  待機中... ($retry/12)" -ForegroundColor DarkGray
+    Start-Sleep -Seconds 10
 }
 
-# --- 2b. Bicep デプロイ ---
-Write-Host "`n[2b/7] インフラデプロイ（約 20〜30 分かかります）..." -ForegroundColor Yellow
-$deployResult = az deployment group create `
-    --resource-group $ResourceGroup `
-    --template-file infra/main.bicep `
-    --parameters infra/main.bicepparam `
-    --query "properties.outputs" `
-    -o json | ConvertFrom-Json
+# --- 3. Control インフラを先にデプロイ ---
+$faultEnvironmentId = "$($ResourceGroup.ToLowerInvariant())/$ControlPrefix"
+Write-Host "`n[3/8] Control インフラをインフラ RG にデプロイ..." -ForegroundColor Yellow
+$controlResult = Invoke-AzCommand @(
+    "deployment", "group", "create", "--name", "control-infrastructure",
+    "--resource-group", $ResourceGroup, "--template-file", "infra/control-main.bicep",
+    "--parameters", "location=$Location", "prefix=$ControlPrefix", "targetPort=8080",
+    "entraClientId=$ControlEntraClientId", "entraIssuer=$entraIssuer",
+    "faultEnvironmentId=$faultEnvironmentId", "--query", "properties.outputs", "-o", "json"
+) "Control インフラの Bicep デプロイに失敗しました。" | ConvertFrom-Json
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Bicep デプロイに失敗しました。"
-    exit 1
+$faultStorageAccountName = ($controlResult.storageAccountId.value -split '/')[-1]
+$controlAcrLoginServer = $controlResult.registryLoginServer.value
+$controlAcrName = $controlAcrLoginServer -replace '\.azurecr\.io$', ''
+$controlAppFqdn = $controlResult.containerAppFqdn.value
+$controlAppName = "$ControlPrefix-app"
+if ([string]::IsNullOrWhiteSpace($faultStorageAccountName) -or
+    [string]::IsNullOrWhiteSpace($controlAcrLoginServer) -or
+    [string]::IsNullOrWhiteSpace($controlAppFqdn)) {
+    throw "Control インフラの必須出力を取得できませんでした。"
+}
+Write-Host "  Control Storage: $faultStorageAccountName" -ForegroundColor Green
+Write-Host "  Control ACR: $controlAcrLoginServer" -ForegroundColor Green
+Write-Host "  Control App: $controlAppFqdn" -ForegroundColor Green
+
+# --- 4. Control 出力を接続して Demo インフラをデプロイ ---
+$env:SRE_CONTROL_RESOURCE_GROUP = $ResourceGroup
+$env:SRE_FAULT_STORAGE_ACCOUNT = $faultStorageAccountName
+$env:SRE_FAULT_ENVIRONMENT_ID = $faultEnvironmentId
+Write-Host "`n[4/8] Demo インフラを同じインフラ RG にデプロイ（約 20～30 分）..." -ForegroundColor Yellow
+$demoResult = Invoke-AzCommand @(
+    "deployment", "group", "create", "--name", "demo-infrastructure",
+    "--resource-group", $ResourceGroup, "--template-file", "infra/main.bicep",
+    "--parameters", "infra/main.bicepparam", "--query", "properties.outputs", "-o", "json"
+) "Demo インフラの Bicep デプロイに失敗しました。" | ConvertFrom-Json
+
+$demoAcrLoginServer = $demoResult.acrLoginServer.value
+$demoAcrName = $demoAcrLoginServer -replace '\.azurecr\.io$', ''
+$demoAppFqdn = $demoResult.containerAppFqdn.value
+$demoAppName = "sre-demo-app"
+if ([string]::IsNullOrWhiteSpace($demoAcrLoginServer) -or [string]::IsNullOrWhiteSpace($demoAppFqdn)) {
+    throw "Demo インフラの必須出力を取得できませんでした。"
 }
 
-$acrLoginServer = $deployResult.acrLoginServer.value
-$acrName = $acrLoginServer -replace '\.azurecr\.io$', ''
-$appName = "sre-demo-app"
-
-Write-Host "  ACR: $acrLoginServer" -ForegroundColor Green
-Write-Host "  SQL: $($deployResult.sqlServerFqdn.value)" -ForegroundColor Green
-Write-Host "  Container App: $($deployResult.containerAppFqdn.value)" -ForegroundColor Green
-
-# --- 3. ACR にイメージビルド ---
-Write-Host "`n[3/7] コンテナイメージのビルド & ACR プッシュ..." -ForegroundColor Yellow
-$imageTag = (git rev-parse --short HEAD)
-if (-not $imageTag) { $imageTag = [DateTime]::Now.ToString('yyyyMMddHHmmss') }
-Write-Host "  イメージタグ: $imageTag" -ForegroundColor DarkGray
-az acr build --registry $acrName --image sre-demo-app:$imageTag ./app/
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "ACR ビルドに失敗しました。"
-    exit 1
+# --- 5. 各 ACR で各アプリをビルド ---
+$imageTag = (& git rev-parse --short HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($imageTag)) {
+    throw "Git コミットハッシュを取得できませんでした。Git リポジトリの状態を確認してください。"
 }
+Write-Host "`n[5/8] Control/Demo イメージを別々の ACR でビルド: $imageTag" -ForegroundColor Yellow
+Invoke-AzCommand @("acr", "build", "--registry", $controlAcrName, "--image", "sre-control-app:$imageTag", "./control-app") `
+    "Control App の ACR ビルドに失敗しました。" | Out-Null
+Invoke-AzCommand @("acr", "build", "--registry", $demoAcrName, "--image", "sre-demo-app:$imageTag", "./app") `
+    "Demo App の ACR ビルドに失敗しました。" | Out-Null
 
-# --- 4. Container App のイメージ更新 ---
-Write-Host "`n[4/7] Container App のイメージを更新..." -ForegroundColor Yellow
-$updateArgs = @(
-    "containerapp", "update",
-    "--name", $appName,
-    "--resource-group", $ResourceGroup,
-    "--image", "$acrLoginServer/sre-demo-app:$imageTag"
-)
+# --- 6. 両 Container App を更新 ---
+Write-Host "`n[6/8] Control/Demo Container App のイメージを更新..." -ForegroundColor Yellow
+Invoke-AzCommand @(
+    "containerapp", "update", "--name", $controlAppName, "--resource-group", $ResourceGroup,
+    "--image", "$controlAcrLoginServer/sre-control-app:$imageTag", "-o", "none"
+) "Control Container App の更新に失敗しました。" | Out-Null
+Invoke-AzCommand @(
+    "containerapp", "update", "--name", $demoAppName, "--resource-group", $ResourceGroup,
+    "--image", "$demoAcrLoginServer/sre-demo-app:$imageTag", "-o", "none"
+) "Demo Container App の更新に失敗しました。" | Out-Null
 
-az @updateArgs -o none
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Container App の更新に失敗しました。"
-    exit 1
-}
-
-# --- 5. SRE Agent デプロイ ---
-Write-Host "`n[5/7] SRE Agent デプロイ..." -ForegroundColor Yellow
-
-# SRE Agent 用 RG 作成
-$sreRgArgs = @("group", "create", "--name", $SreAgentResourceGroup, "--location", $SreAgentLocation, "-o", "none")
-if ($Tags.Count -gt 0) {
-    $tagStrings = $Tags.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
-    $sreRgArgs += @("--tags") + $tagStrings
-}
-az @sreRgArgs
-Write-Host "  RG: $SreAgentResourceGroup ($SreAgentLocation)" -ForegroundColor DarkGray
-
-# Azure CLI 拡張機能
-az extension add --name application-insights --only-show-errors 2>$null
-
-# インフラ RG から情報取得
-$subscriptionId = (az account show --query id -o tsv)
-$infraRgId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup"
-$appiJson = az monitor app-insights component show -g $ResourceGroup --query "[0]" -o json | ConvertFrom-Json
-if (-not $appiJson) { Write-Error "Application Insights が見つかりません"; exit 1 }
-
-# 環境変数セット
-$env:SRE_INFRA_RG_ID = $infraRgId
-$env:SRE_APPI_APP_ID = $appiJson.appId
-$env:SRE_APPI_CONNECTION_STRING = $appiJson.connectionString
-
-# Bicep デプロイ
-$agentResult = az deployment group create `
-    --resource-group $SreAgentResourceGroup `
-    --template-file infra/sre-agent.bicep `
-    --parameters infra/sre-agent.bicepparam `
-    --query "properties.outputs" `
-    -o json | ConvertFrom-Json
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "SRE Agent デプロイに失敗しました。"
-    exit 1
-}
-
-$agentName = $agentResult.agentName.value
-$miPrincipalId = $agentResult.managedIdentityPrincipalId.value
-$portalUrl = $agentResult.portalUrl.value
-Write-Host "  Agent: $agentName" -ForegroundColor Green
-Write-Host "  Portal: $portalUrl" -ForegroundColor Green
-
-# RBAC 付与
-$roles = @(
-    @{ Name = "Contributor"; Id = "b24988ac-6180-42a0-ab88-20f7382dd24c" }
-    @{ Name = "Monitoring Reader"; Id = "43d0d8ad-25c7-4714-9337-8ba259a9fe05" }
-    @{ Name = "Log Analytics Reader"; Id = "73c42c96-874c-492b-b04d-ab87d138a893" }
-)
-foreach ($role in $roles) {
-    az role assignment create `
-        --assignee-object-id $miPrincipalId `
-        --assignee-principal-type ServicePrincipal `
-        --role $role.Id `
-        --scope $infraRgId `
-        -o none 2>$null
-    Write-Host "  $($role.Name) をインフラ RG に付与" -ForegroundColor DarkGray
-}
-
-# Cost Management Reader (サブスクリプションスコープ)
-az role assignment create `
-    --assignee-object-id $miPrincipalId `
-    --assignee-principal-type ServicePrincipal `
-    --role "72fafb9e-0641-4937-9268-a91bfd8191a3" `
-    --scope "/subscriptions/$subscriptionId" `
-    -o none 2>$null
-Write-Host "  Cost Management Reader をサブスクリプションに付与" -ForegroundColor DarkGray
-
-# SRE Agent Administrator
-$currentUserId = az ad signed-in-user show --query id -o tsv 2>$null
-if ($currentUserId) {
-    az role assignment create `
-        --assignee-object-id $currentUserId `
-        --assignee-principal-type User `
-        --role "SRE Agent Administrator" `
-        --scope $agentResult.agentResourceId.value `
-        -o none 2>$null
-    Write-Host "  SRE Agent Administrator を付与" -ForegroundColor DarkGray
-}
-
-# --- 6. GitHub Actions OIDC 設定 ---
+# --- 7. GitHub Actions OIDC（Demo の ACR/App のみ） ---
 if (-not $EnableOidc) {
-    Write-Host "`n[6/7] GitHub Actions OIDC 設定...スキップ（有効化は -EnableOidc）" -ForegroundColor DarkGray
+    Write-Host "`n[7/8] GitHub Actions OIDC 設定...スキップ（有効化は -EnableOidc）" -ForegroundColor DarkGray
 } else {
-    Write-Host "`n[6/7] GitHub Actions OIDC 設定..." -ForegroundColor Yellow
-
-    # gh CLI チェック
+    Write-Host "`n[7/8] GitHub Actions OIDC 設定（Demo の ACR/App のみ）..." -ForegroundColor Yellow
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        Write-Host "  gh CLI が見つかりません。OIDC 設定をスキップします。" -ForegroundColor Red
-        Write-Host "  インストール: https://cli.github.com/" -ForegroundColor DarkGray
+        Write-Warning "gh CLI が見つからないため OIDC 設定をスキップします。"
     } else {
-        # GitHub リポジトリ検出
         if (-not $GitHubRepo) {
             $gitRemoteUrl = git remote get-url origin 2>$null
-            if ($gitRemoteUrl -match 'github\.com[:/](.+?)(?:\.git)?$') {
-                $GitHubRepo = $Matches[1]
-            }
+            if ($LASTEXITCODE -eq 0 -and $gitRemoteUrl -match 'github\.com[:/](.+?)(?:\.git)?$') { $GitHubRepo = $Matches[1] }
         }
-
         if (-not $GitHubRepo) {
-            Write-Host "  GitHub リポジトリを検出できません。-GitHubRepo を指定してください。" -ForegroundColor Red
+            Write-Warning "GitHub リポジトリを検出できないため OIDC 設定をスキップします。"
         } else {
-            $subscriptionId = (az account show --query id -o tsv)
-            $tenantId = (az account show --query tenantId -o tsv)
             $appDisplayName = "sre-demo-github-actions"
-            $credName = "github-actions-main"
-
-            Write-Host "  リポジトリ: $GitHubRepo" -ForegroundColor DarkGray
-
-            # Entra ID アプリ登録（既存があれば再利用）
-            $existingApp = az ad app list --display-name $appDisplayName --query "[0]" -o json 2>$null | ConvertFrom-Json
+            $credentialName = "github-actions-main"
+            $existingApp = Invoke-AzCommand @(
+                "ad", "app", "list", "--display-name", $appDisplayName, "--query", "[0]", "-o", "json"
+            ) "OIDC 用 Entra アプリを確認できませんでした。" | ConvertFrom-Json
             if ($existingApp) {
                 $appClientId = $existingApp.appId
                 $appObjectId = $existingApp.id
-                Write-Host "  既存のアプリ登録を使用: $appClientId" -ForegroundColor DarkGray
             } else {
-                $newApp = az ad app create --display-name $appDisplayName -o json | ConvertFrom-Json
+                $newApp = Invoke-AzCommand @("ad", "app", "create", "--display-name", $appDisplayName, "-o", "json") `
+                    "OIDC 用 Entra アプリの作成に失敗しました。" | ConvertFrom-Json
                 $appClientId = $newApp.appId
                 $appObjectId = $newApp.id
-                Write-Host "  アプリ登録を作成: $appClientId" -ForegroundColor Green
             }
 
-            # Service Principal（既存があれば再利用）
-            $spId = az ad sp list --filter "appId eq '$appClientId'" --query "[0].id" -o tsv 2>$null
-            if (-not $spId) {
-                az ad sp create --id $appClientId -o none
-                $spId = (az ad sp list --filter "appId eq '$appClientId'" --query "[0].id" -o tsv)
-                Write-Host "  Service Principal を作成" -ForegroundColor Green
+            $servicePrincipalId = Invoke-AzCommand @(
+                "ad", "sp", "list", "--filter", "appId eq '$appClientId'", "--query", "[0].id", "-o", "tsv"
+            ) "OIDC 用 Service Principal を確認できませんでした。"
+            if ([string]::IsNullOrWhiteSpace($servicePrincipalId)) {
+                Invoke-AzCommand @("ad", "sp", "create", "--id", $appClientId, "-o", "none") `
+                    "OIDC 用 Service Principal の作成に失敗しました。" | Out-Null
+                $servicePrincipalId = Invoke-AzCommand @(
+                    "ad", "sp", "list", "--filter", "appId eq '$appClientId'", "--query", "[0].id", "-o", "tsv"
+                ) "作成した Service Principal を取得できませんでした。"
             }
 
-            # Federated Credential（main ブランチのみ — パブリックリポジトリのセキュリティ対策）
-            $existingCredCount = az ad app federated-credential list --id $appObjectId --query "[?name=='$credName'] | length(@)" -o tsv 2>$null
-            if ($existingCredCount -eq "0" -or -not $existingCredCount) {
-                $fedCredParams = @{
-                    name        = $credName
-                    issuer      = "https://token.actions.githubusercontent.com"
-                    subject     = "repo:${GitHubRepo}:ref:refs/heads/main"
-                    description = "GitHub Actions - main branch only"
-                    audiences   = @("api://AzureADTokenExchange")
+            $credential = @{
+                name = $credentialName
+                issuer = "https://token.actions.githubusercontent.com"
+                subject = "repo:${GitHubRepo}:ref:refs/heads/main"
+                description = "GitHub Actions - main branch only"
+                audiences = @("api://AzureADTokenExchange")
+            }
+            $existingCredential = Invoke-AzCommand @(
+                "ad", "app", "federated-credential", "list", "--id", $appObjectId,
+                "--query", "[?name=='$credentialName'] | [0]", "-o", "json"
+            ) "Federated Credential を確認できませんでした。" | ConvertFrom-Json
+            $credentialMatches = $existingCredential -and
+                $existingCredential.issuer -eq $credential.issuer -and
+                $existingCredential.subject -eq $credential.subject -and
+                @($existingCredential.audiences).Count -eq 1 -and
+                @($existingCredential.audiences)[0] -eq $credential.audiences[0]
+            if (-not $credentialMatches) {
+                if ($existingCredential) {
+                    Invoke-AzCommand @(
+                        "ad", "app", "federated-credential", "delete", "--id", $appObjectId,
+                        "--federated-credential-id", $existingCredential.id
+                    ) "既存 Federated Credential の削除に失敗しました。" | Out-Null
                 }
                 $tempFile = [System.IO.Path]::GetTempFileName()
                 try {
-                    $fedCredParams | ConvertTo-Json -Depth 3 | Set-Content -Path $tempFile -Encoding UTF8
-                    az ad app federated-credential create --id $appObjectId --parameters $tempFile -o none
-                    Write-Host "  Federated Credential を作成（main ブランチのみ）" -ForegroundColor Green
+                    $credential | ConvertTo-Json -Depth 3 | Set-Content -Path $tempFile -Encoding UTF8
+                    Invoke-AzCommand @(
+                        "ad", "app", "federated-credential", "create", "--id", $appObjectId,
+                        "--parameters", $tempFile, "-o", "none"
+                    ) "Federated Credential の作成に失敗しました。" | Out-Null
                 } finally {
                     Remove-Item $tempFile -ErrorAction SilentlyContinue
                 }
-            } else {
-                Write-Host "  Federated Credential は既存" -ForegroundColor DarkGray
             }
 
-            # RBAC: RG に Contributor ロールを付与
-            az role assignment create `
-                --assignee-object-id $spId `
-                --assignee-principal-type ServicePrincipal `
-                --role Contributor `
-                --scope "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup" `
-                -o none 2>$null
-            Write-Host "  Contributor ロールを RG に割当" -ForegroundColor Green
-
-            # GitHub Secrets（OIDC 認証情報 — シークレットとして格納）
-            gh secret set AZURE_CLIENT_ID --body $appClientId --repo $GitHubRepo
-            gh secret set AZURE_TENANT_ID --body $tenantId --repo $GitHubRepo
-            gh secret set AZURE_SUBSCRIPTION_ID --body $subscriptionId --repo $GitHubRepo
-            Write-Host "  GitHub Secrets を設定（AZURE_CLIENT_ID / TENANT_ID / SUBSCRIPTION_ID）" -ForegroundColor Green
-
-            # GitHub Variables（リソース名 — 秘匿不要の値）
-            gh variable set RESOURCE_GROUP --body $ResourceGroup --repo $GitHubRepo
-            gh variable set ACR_NAME --body $acrName --repo $GitHubRepo
-            gh variable set CONTAINER_APP_NAME --body $appName --repo $GitHubRepo
-            Write-Host "  GitHub Variables を設定（RESOURCE_GROUP / ACR_NAME / CONTAINER_APP_NAME）" -ForegroundColor Green
-
-            Write-Host "  OIDC 設定完了 — app/** への push で自動デプロイが有効です" -ForegroundColor Green
+            $demoAcrResourceId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ContainerRegistry/registries/$demoAcrName"
+            $demoAppResourceId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/containerApps/$demoAppName"
+            $roleAssignments = @(
+                @{ Scope = $demoAcrResourceId; Role = "AcrPush" }
+                @{ Scope = $demoAppResourceId; Role = "Contributor" }
+            )
+            foreach ($assignment in $roleAssignments) {
+                Invoke-AzCommand @(
+                    "role", "assignment", "create", "--assignee-object-id", $servicePrincipalId,
+                    "--assignee-principal-type", "ServicePrincipal", "--role", $assignment.Role,
+                    "--scope", $assignment.Scope, "-o", "none"
+                ) "Demo リソースへの OIDC ロール割り当てに失敗しました。" | Out-Null
+            }
+            Invoke-GhCommand @("secret", "set", "AZURE_CLIENT_ID", "--body", $appClientId, "--repo", $GitHubRepo) "AZURE_CLIENT_ID の設定に失敗しました。"
+            Invoke-GhCommand @("secret", "set", "AZURE_TENANT_ID", "--body", $tenantId, "--repo", $GitHubRepo) "AZURE_TENANT_ID の設定に失敗しました。"
+            Invoke-GhCommand @("secret", "set", "AZURE_SUBSCRIPTION_ID", "--body", $subscriptionId, "--repo", $GitHubRepo) "AZURE_SUBSCRIPTION_ID の設定に失敗しました。"
+            Invoke-GhCommand @("variable", "set", "RESOURCE_GROUP", "--body", $ResourceGroup, "--repo", $GitHubRepo) "RESOURCE_GROUP の設定に失敗しました。"
+            Invoke-GhCommand @("variable", "set", "ACR_NAME", "--body", $demoAcrName, "--repo", $GitHubRepo) "ACR_NAME の設定に失敗しました。"
+            Invoke-GhCommand @("variable", "set", "CONTAINER_APP_NAME", "--body", $demoAppName, "--repo", $GitHubRepo) "CONTAINER_APP_NAME の設定に失敗しました。"
+            Write-Host "  OIDC 設定完了。対象は Demo ACR/App のみです。" -ForegroundColor Green
         }
     }
 }
 
-# --- 7. 完了 ---
-Write-Host "`n[7/7] デプロイ完了!" -ForegroundColor Green
+# --- 8. 完了 ---
+$appInsightsName = "sre-demo-appi"
+$appInsightsId = Invoke-AzCommand @(
+    "resource", "show", "--resource-group", $ResourceGroup,
+    "--resource-type", "Microsoft.Insights/components", "--name", $appInsightsName,
+    "--query", "id", "-o", "tsv"
+) "Application Insights のリソース ID を取得できませんでした。"
+
+Write-Host "`n[8/8] デプロイ完了" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " アクセス情報" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Container App:  https://$($deployResult.containerAppFqdn.value)" -ForegroundColor White
-Write-Host "  ACR:            $acrLoginServer" -ForegroundColor White
-Write-Host "  SQL Server:     $($deployResult.sqlServerFqdn.value)" -ForegroundColor White
-Write-Host "  Log Analytics:  $($deployResult.logAnalyticsWorkspaceName.value)" -ForegroundColor White
-Write-Host "  VM Hub:         $($deployResult.vmHubPrivateIp.value)" -ForegroundColor White
-Write-Host "  VM Spoke2:      $($deployResult.vmSpoke2PrivateIp.value)" -ForegroundColor White
-Write-Host "  SRE Agent:      $portalUrl" -ForegroundColor White
+Write-Host "  Demo URL:          https://$demoAppFqdn" -ForegroundColor White
+Write-Host "  Control URL:       https://$controlAppFqdn" -ForegroundColor White
+Write-Host "  インフラ RG:       $ResourceGroup" -ForegroundColor White
+Write-Host "  空の Agent RG:     $SreAgentResourceGroup" -ForegroundColor White
+Write-Host "  Log Analytics:     $($demoResult.logAnalyticsWorkspaceName.value)" -ForegroundColor White
+Write-Host "  Log Analytics ID:  $($demoResult.logAnalyticsWorkspaceId.value)" -ForegroundColor White
+Write-Host "  App Insights:      $appInsightsName" -ForegroundColor White
+Write-Host "  App Insights ID:   $appInsightsId" -ForegroundColor White
+Write-Host "  Fault Environment: $faultEnvironmentId" -ForegroundColor White
 Write-Host ""
-Write-Host "  次のステップ:" -ForegroundColor Yellow
-Write-Host "    1. ポータルで Knowledge Source に knowledge/ のファイルをアップロード" -ForegroundColor White
-Write-Host "    2. ポータルで instruction に infra/prompts/incident-auto.md の内容を設定" -ForegroundColor White
+Write-Host "  対応 Fault ID:" -ForegroundColor Yellow
+Write-Host "    app-exception, app-latency, app-n-plus-one" -ForegroundColor White
+Write-Host "    vm-cpu-high, vm-memory-high, vm-disk-pressure" -ForegroundColor White
+Write-Host "    sql-high-load, sql-deadlock, network-deny" -ForegroundColor White
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " VM 用変数設定（Bastion 接続後にコピペ）" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-$vmVarsBlock = @"
-`$RG = "$ResourceGroup"
-`$SUB = "$((az account show --query id -o tsv))"
-`$FQDN = "$($deployResult.containerAppFqdn.value)"
-`$SQL_SERVER = "$($deployResult.sqlServerFqdn.value)"
-`$ACR_NAME = "$acrName"
-`$connStr = "Server=`$SQL_SERVER;Database=sre-demo-sqldb;User Id=sqladmin;Password=<pass>;Encrypt=True;TrustServerCertificate=False;Application Name=sre-demo-vm-hub"
-"@
-Write-Host $vmVarsBlock -ForegroundColor White
+Write-Host "  参加者の次のステップ:" -ForegroundColor Yellow
+Write-Host "    1. https://sre.azure.com/ を開く" -ForegroundColor White
+Write-Host "    2. Agent RG '$SreAgentResourceGroup' に SRE Agent を作成する" -ForegroundColor White
+Write-Host "    3. インフラ RG '$ResourceGroup' と上記監視リソースを対象に設定する" -ForegroundColor White
 Write-Host ""
-Write-Host "  削除: ./scripts/destroy.ps1 -ResourceGroup $ResourceGroup" -ForegroundColor DarkGray
+Write-Host "  削除: ./scripts/destroy.ps1 -ResourceGroup $ResourceGroup -SreAgentResourceGroup $SreAgentResourceGroup" -ForegroundColor DarkGray

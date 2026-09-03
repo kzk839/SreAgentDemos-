@@ -38,6 +38,15 @@ param sqlAdminPassword string
 @description('Email address for alert notifications')
 param notificationEmail string
 
+@description('Resource group containing the control plane fault storage account; leave empty to disable fault integration')
+param controlResourceGroupName string = ''
+
+@description('Existing control plane fault storage account name; leave empty to disable fault integration')
+param faultStorageAccountName string = ''
+
+@description('Fault environment identifier for this Demo deployment; leave empty to disable fault integration')
+param faultEnvironmentId string = ''
+
 // ============================================================
 // Variables
 // ============================================================
@@ -51,6 +60,8 @@ var allPrefixes = [
 ]
 var acrName = '${replace(prefix, '-', '')}acr${uniqueString(resourceGroup().id)}'
 var sqlServerName = '${prefix}-sql-${uniqueString(resourceGroup().id)}'
+var enableFaultIntegration = !empty(controlResourceGroupName) && !empty(faultStorageAccountName) && !empty(faultEnvironmentId)
+var faultTableEndpoint = enableFaultIntegration ? 'https://${faultStorageAccountName}.table.${environment().suffixes.storage}' : ''
 
 // ============================================================
 // Monitoring
@@ -98,6 +109,7 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
             '\\Memory\\Available MBytes'
             '\\Memory\\% Committed Bytes In Use'
             '\\LogicalDisk(_Total)\\% Free Space'
+            '\\LogicalDisk(F:)\\% Free Space'
             '\\LogicalDisk(_Total)\\Disk Reads/sec'
             '\\LogicalDisk(_Total)\\Disk Writes/sec'
             '\\Network Interface(*)\\Bytes Total/sec'
@@ -504,6 +516,71 @@ resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   ]
 }
 
+module faultStorageAccess 'modules/faultStorageAccess.bicep' = if (enableFaultIntegration) {
+  name: 'deploy-fault-storage-access'
+  scope: resourceGroup(controlResourceGroupName)
+  params: {
+    storageAccountName: faultStorageAccountName
+    principalId: managedIdentity.properties.principalId
+  }
+}
+
+resource tablePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = if (enableFaultIntegration) {
+  name: 'privatelink.table.${environment().suffixes.storage}'
+  location: 'global'
+}
+
+resource tablePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = if (enableFaultIntegration) {
+  parent: tablePrivateDnsZone
+  name: '${prefix}-table-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnetSpoke1.outputs.id
+    }
+  }
+}
+
+resource tablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (enableFaultIntegration) {
+  name: '${prefix}-fault-table-pe'
+  location: location
+  properties: {
+    privateLinkServiceConnections: [
+      {
+        name: 'table'
+        properties: {
+          groupIds: [
+            'table'
+          ]
+          privateLinkServiceId: resourceId(controlResourceGroupName, 'Microsoft.Storage/storageAccounts', faultStorageAccountName)
+        }
+      }
+    ]
+    subnet: {
+      id: vnetSpoke1.outputs.subnets[1].id
+    }
+  }
+}
+
+resource tablePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (enableFaultIntegration) {
+  parent: tablePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'table'
+        properties: {
+          privateDnsZoneId: tablePrivateDnsZone.id
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    tablePrivateDnsLink
+  ]
+}
+
 // ============================================================
 // Container Apps (Internal Environment in Spoke1 VNet)
 // ============================================================
@@ -521,9 +598,14 @@ module containerApps 'modules/containerApps.bicep' = {
     managedIdentityId: managedIdentity.id
     sqlConnectionString: 'Server=tcp:${sqlDatabase.outputs.serverFqdn},1433;Initial Catalog=${sqlDatabase.outputs.databaseName};User ID=${sqlAdminUsername};Password=${sqlAdminPassword};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;Application Name=${prefix}-app;'
     logAnalyticsWorkspaceId: logAnalytics.id
+    tableEndpoint: faultTableEndpoint
+    faultEnvironmentId: faultEnvironmentId
+    enableFaultInjection: enableFaultIntegration
   }
   dependsOn: [
     acrPullRole
+    faultStorageAccess
+    tablePrivateDnsZoneGroup
   ]
 }
 
@@ -696,6 +778,7 @@ module vmHub 'modules/vm.bicep' = {
     vmSize: vmSize
     logAnalyticsWorkspaceId: logAnalytics.id
     dcrId: dcr.id
+    enableFaultDataDisk: true
   }
 }
 

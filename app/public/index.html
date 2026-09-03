@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SRE Demo Items</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div><p class="eyebrow">SRE DEMO APPLICATION</p><h1>Items workspace</h1></div>
+    <div class="system-state" aria-live="polite">
+      <span id="db-indicator" class="indicator"></span><span id="db-state">Checking database</span>
+      <span class="divider"></span><span id="workload-state">Workload: checking</span>
+    </div>
+  </header>
+  <main>
+    <section class="toolbar" aria-labelledby="items-heading">
+      <div><h2 id="items-heading">Items</h2><p><span id="item-count">0</span> records</p></div>
+      <form id="create-form" class="create-form">
+        <label for="item-name">New item</label>
+        <input id="item-name" name="name" maxlength="200" required placeholder="Item name">
+        <button type="submit">Add item</button>
+      </form>
+      <button id="refresh-button" class="icon-button" type="button" title="Reload items" aria-label="Reload items">↻</button>
+    </section>
+    <div id="message" class="message" role="status" aria-live="polite"></div>
+    <section class="table-panel" aria-label="Item list">
+      <div class="table-scroll"><table>
+        <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody id="items-body"></tbody>
+      </table></div>
+      <div id="empty-state" class="empty-state" hidden>No items found.</div>
+    </section>
+    <section class="activity-panel" aria-labelledby="activity-heading">
+      <div class="section-heading"><h2 id="activity-heading">Recent user activity</h2><span>Auto-refreshes every 3 seconds</span></div>
+      <ul id="activity-list" class="activity-list"></ul>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

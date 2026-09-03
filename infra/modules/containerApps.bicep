@@ -36,6 +36,15 @@ param sqlConnectionString string = ''
 @description('Log Analytics Workspace resource ID for diagnostic settings')
 param logAnalyticsWorkspaceId string = ''
 
+@description('Azure Storage Table service endpoint')
+param tableEndpoint string = ''
+
+@description('Identifier used to partition fault state for this environment')
+param faultEnvironmentId string = ''
+
+@description('Enable application fault injection behavior')
+param enableFaultInjection bool = false
+
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
@@ -106,7 +115,28 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             memory: '1Gi'
           }
           env: concat(
-            [],
+            [
+              {
+                name: 'AZURE_STORAGE_TABLE_ENDPOINT'
+                value: tableEndpoint
+              }
+              {
+                name: 'ACTIVITY_TABLE_NAME'
+                value: 'ActivityEvents'
+              }
+              {
+                name: 'FAULT_STATE_TABLE_NAME'
+                value: 'FaultState'
+              }
+              {
+                name: 'FAULT_ENVIRONMENT_ID'
+                value: faultEnvironmentId
+              }
+              {
+                name: 'ENABLE_FAULT_INJECTION'
+                value: string(enableFaultInjection)
+              }
+            ],
             !empty(appInsightsConnectionString)
               ? [
                   {

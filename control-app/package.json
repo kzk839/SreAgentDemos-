@@ -1,7 +1,8 @@
 {
-  "name": "sre-demo-app",
+  "name": "sre-demo-control-app",
   "version": "1.0.0",
-  "description": "SRE Agent Demo - Sample REST API",
+  "private": true,
+  "description": "Fault Control App for the SRE Agent demo",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -11,8 +12,7 @@
   "dependencies": {
     "@azure/data-tables": "^13.3.0",
     "@azure/identity": "^4.11.1",
-    "express": "^5.1.0",
-    "mssql": "^11.0.1",
-    "applicationinsights": "^3.4.0"
+    "chart.js": "^4.5.0",
+    "express": "^5.1.0"
   }
 }

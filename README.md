@@ -1,236 +1,286 @@
 # Azure SRE Agent Demo
 
-Azure SRE Agent のデモ環境。Hub-Spoke ネットワーク上に Container Apps + Azure SQL + VM を配置し、SRE Agent による障害検知・調査・対処を実演します。
+Azure SRE Agent の作成、監視接続、障害検知、調査、復旧を体験するハンズオン環境です。主催者がアプリ基盤と空の Agent 用リソースグループを構築し、参加者が [Azure SRE Agent](https://sre.azure.com/) を作成して演習します。
 
-## ファイル構成
+> [!WARNING]
+> Fault は明示的に停止、緊急停止、またはリセットするまで継続します。本番環境では使用しないでください。
 
+## 現在の実装状況
+
+現時点では**全Faultが動作する完成状態ではありません**。
+
+| 範囲 | 状況 |
+|---|---|
+| Demo AppのCRUD、AUTOワークロード、操作イベント記録 | 実装済み |
+| Control Appの集計グラフ、認証・認可、監査、Fault状態管理 | 実装済み |
+| アプリFault: 例外、遅延、N+1 | 実装済み |
+| VM Fault: CPU、メモリ、F:ディスク | UIとdesired stateのみ。Runner未実装 |
+| SQL Fault: 高負荷、デッドロック | UIとdesired stateのみ。Runner未実装 |
+| Network Deny | UIとdesired stateのみ。Runner未実装 |
+| Reconciler | 未実装 |
+| 同一基盤RG内のDemo/Control分離と空のAgent RG | Bicepとスクリプト実装済み、Azure実デプロイ未検証 |
+| Control AppからのAUTOワークロード開始・停止 | 未実装の将来拡張 |
+
+Azure Fault 6種は、Runner/Reconcilerの実装と実環境での復旧検証が完了するまで演習に使用できません。
+
+## アーキテクチャ
+
+基盤リソースグループは1つですが、障害対象の Demo 系と障害操作用の Control 系は、VNet、Container Apps Environment、ACR、Managed Identity を分離します。リソースグループは管理・RBAC・削除の単位であり、Network Fault の障害境界はネットワーク経路と実行環境の分離で確保します。SRE Agent 用リソースグループだけを別に作成します。
+
+```mermaid
+flowchart LR
+  User[参加者]
+  subgraph InfraRG[基盤 RG]
+    subgraph DemoPlane[Demo VNet / ACA Environment]
+      Demo[Demo App]
+      SQL[(Azure SQL)]
+      VM[Windows VM]
+      FW[Azure Firewall]
+      DemoACR[Demo ACR]
+    end
+    subgraph ControlPlane[Control VNet / ACA Environment]
+      Control[Fault Control App]
+      State[(Azure Table Storage)]
+      ControlACR[Control ACR]
+    end
+    Monitor[Log Analytics / App Insights / Alerts]
+  end
+  subgraph AgentRG[空の SRE Agent RG]
+    Agent[SRE Agent: 参加者が作成]
+  end
+
+  User --> Demo
+  User -->|Entra ID| Control
+  Demo --> SQL
+  Demo --> State
+  Control --> State
+  Demo --> Monitor
+  SQL --> Monitor
+  VM --> Monitor
+  Agent --> Monitor
+  Agent --> InfraRG
 ```
-SreAgentDemos/
-├── .gitignore                          # Git 除外設定（.env, 証明書, node_modules 等）
-├── README.md                           # 本ドキュメント
-├── knowledge/                          # SRE Agent ナレッジベース（KB）
-│   ├── infrastructure-spec.md          # インフラ構成仕様
-│   ├── app-expert.md                   # アプリ専門知識
-│   ├── db-expert.md                    # DB 専門知識
-│   └── network-expert.md              # NW 専門知識
-├── docs/
-│   └── internal/                       # 内部メモ（gitignored）
-├── scripts/
-│   ├── deploy.ps1                      # 一括デプロイ（インフラ + アプリ + SRE Agent）
-│   └── destroy.ps1                     # 一括削除（RG ごと削除）
-├── infra/
-│   ├── main.bicep                      # メインオーケストレーション
-│   ├── main.bicepparam                 # パラメータファイル
-│   ├── sre-agent.bicep                 # SRE Agent 定義
-│   ├── sre-agent.bicepparam            # SRE Agent パラメータ
-│   ├── prompts/                        # SRE Agent instruction / タスク
-│   │   ├── incident-auto.md            # インシデント対応ワークフロー（自立モード用 instruction）
-│   │   ├── incident-review.md          # インシデント対応ワークフロー（レビューモード用 instruction）
-│   │   ├── health-check.md             # ヘルスチェック（スケジュールタスク用）
-│   │   └── cost-analysis.md            # コスト分析（スケジュールタスク用）
-│   └── modules/
-│       ├── vnet.bicep                  # VNet モジュール
-│       ├── vm.bicep                    # VM モジュール（AMA + DCR 込み）
-│       ├── azureFirewall.bicep         # Azure Firewall + Policy + ルール
-│       ├── containerApps.bicep         # Container Apps Environment + App
-│       ├── containerRegistry.bicep     # ACR + Private Endpoint
-│       ├── sqlDatabase.bicep           # Azure SQL Server + DB + Private Endpoint
-│       ├── privateDnsZone.bicep        # Private DNS Zone + VNet Link
-│       ├── vnetFlowLogs.bicep          # VNet Flow Logs (Traffic Analytics)
-│       ├── actionGroup.bicep           # アクショングループ
-│       └── alertRules.bicep            # アラートルール
-├── app/
-│   ├── Dockerfile                      # コンテナビルド定義（node:22-alpine）
-│   ├── .dockerignore                   # Docker ビルド除外設定
-│   ├── package.json                    # Node.js 依存 (express, mssql, applicationinsights)
-│   └── src/
-│       └── server.js                   # REST API + バックグラウンドワーカー（バグシナリオ埋め込み済み）
-```
 
----
+Control VNet は Demo のHub/Spoke VNetとピアリングせず、Demo側のFirewallとUDRを使用しません。両アプリは専用ACRからManaged Identityでイメージを取得します。操作イベント、Fault状態、監査ログは障害対象SQLではなくAzure Table Storageへ保存します。
 
-## アプリケーション仕様
+## デプロイ内容
 
-### REST API
+### 基盤 RG: `rg-sre-demo`
 
-| エンドポイント | 説明 |
-|----------------|------|
-| `GET /` | ライブダッシュボード（DB 接続状態、直近の操作履歴、3秒自動更新） |
-| `GET /api/status` | ダッシュボード用 JSON API（DB 接続状態、アイテム数、操作履歴） |
-| `GET /health` | ヘルスチェック |
-| `GET /ready` | DB 接続確認付きレディネスチェック |
-| `GET /api/items` | Items テーブルから最新 50 件を取得 |
-| `POST /api/items` | 新規アイテム作成（`{"name": "..."}` 必須） |
-| `DELETE /api/items/:id` | アイテム削除 |
+- Demo App、Demo Container Apps Environment、Demo ACR、Demo Managed Identity
+- Hub/Spoke VNet、Azure Firewall、Bastion、Windows VM
+- Azure SQL DatabaseとPrivate Endpoint
+- VM Fault専用4 GiB Standard SSD E1（`F:`、`SREFAULT`）
+- Fault Control App、Control Container Apps Environment、Control VNet、Control ACR、Control Managed Identity
+- Azure Table Storage: `ActivityEvents`、`FaultState`、`AuditLog`
+- Log Analytics、Application Insights、Data Collection Rule、Action Group、Alert Rules
 
-### バックグラウンドワーカー
+### Agent RG: `rg-sre-agent`
 
-アプリ起動後、業務アプリケーションの動作をシミュレートするバックグラウンドワーカーが自動的に動作します。
+デプロイ直後は空です。SRE Agent本体は主催者のスクリプトでは作成せず、参加者が演習中に作成します。
 
-| 操作 | 間隔 | 内容 |
-|------|------|------|
-| READ | 10〜30秒（ランダム） | Items テーブルからランダムに 1〜10 件取得 |
-| WRITE | 15〜45秒（ランダム） | ランダムな 1 件の Status を `Active` ↔ `Processed` で切り替え |
-| Pool リセット | 60秒固定 | コネクションプールをクローズして再接続（資格情報変更の検知を早める） |
+## 前提条件
 
-操作履歴はメモリ上のリングバッファ（最大 50 件）に保持され、ダッシュボード（`GET /`）でリアルタイムに確認できます。
-App Insights の `dependencies` テーブルに SQL テレメトリが継続的に蓄積されるため、DB 障害時にエラーが自動的に記録されます。
+- PowerShell 7
+- Azure CLIとBicep CLI（`az bicep install`）
+- Azure CLIのContainer Apps拡張
+- Git
+- 対象サブスクリプションでリソースとロール割り当てを作成できる権限
+- Control App用の単一テナントMicrosoft Entraアプリ登録とクライアントID
+- `Microsoft.App`など、テンプレートが使用するAzureリソースプロバイダーの登録
+- SRE Agent対応リージョンと、ブラウザから必要なAzure/SRE Agentエンドポイントへの通信
 
-### シードデータ
+GitHub Actions OIDCを設定する場合だけGitHub CLIも必要です。
 
-初回起動時、Items テーブルが 10 件未満の場合に 100 件のサンプルデータを自動投入します。
+## 主催者のデプロイ
 
-### バグシナリオ
-
-`server.js` には以下のバグシナリオがコメントアウト状態で埋め込まれています。
-
-| シナリオ | 効果 | アラート |
-|----------|------|----------|
-| BUG SCENARIO A | `GET /api/items` で `TypeError` 例外が発生 | `app-exceptions`, `app-failed-requests` |
-| BUG SCENARIO B | `GET /api/items` で N+1 クエリによるレスポンス遅延 | `app-slow-response` |
-
----
-
-## パラメータ
-
-| パラメータ | 型 | デフォルト | 説明 |
-|-----------|-----|----------|------|
-| `location` | string | リソースグループのリージョン | 全リソースのデプロイ先リージョン |
-| `prefix` | string | `sre-demo` | リソース名のプレフィックス |
-| `adminUsername` | string | 環境変数 `SRE_ADMIN_USERNAME`（フォールバック: `azureadmin`） | VM 管理者ユーザー名 |
-| `adminPassword` | secureString | 環境変数 `SRE_ADMIN_PASSWORD` | VM 管理者パスワード |
-| `vmSize` | string | `Standard_B2s_v2` | 全 VM のサイズ |
-| `sqlAdminUsername` | string | `sqladmin` | Azure SQL 管理者ユーザー名 |
-| `sqlAdminPassword` | secureString | 環境変数 `SRE_SQL_PASSWORD` | Azure SQL 管理者パスワード |
-| `notificationEmail` | string | 環境変数 `SRE_NOTIFICATION_EMAIL` | アラート通知先メールアドレス |
-
----
-
-## デプロイ手順
-
-### 一括デプロイ
+1. Azureへサインインし、対象サブスクリプションを選択します。
 
 ```powershell
-# 1. 環境変数を設定
-$env:SRE_ADMIN_USERNAME = '<VM管理者ユーザー名>'  # 省略時は azureadmin
-$env:SRE_ADMIN_PASSWORD = '<VMパスワード>'
-$env:SRE_SQL_PASSWORD = '<SQLパスワード>'
-$env:SRE_NOTIFICATION_EMAIL = '<通知先メールアドレス>'
+az login
+az account set --subscription '<subscription-id>'
+```
 
-# 2. デプロイ実行
+2. 必須環境変数を設定します。秘密値をファイルへ保存しないでください。
+
+```powershell
+$env:SRE_ADMIN_USERNAME = 'azureadmin' # 省略可
+$env:SRE_ADMIN_PASSWORD = '<VM-password>'
+$env:SRE_SQL_PASSWORD = '<SQL-password>'
+$env:SRE_NOTIFICATION_EMAIL = '<alert-email>'
+$env:SRE_CONTROL_ENTRA_CLIENT_ID = '<control-app-client-id>'
+```
+
+3. 一括デプロイを実行します。
+
+```powershell
 ./scripts/deploy.ps1
 
-# リソースグループ名・リージョンを変更する場合
-./scripts/deploy.ps1 -ResourceGroup "rg-my-demo" -Location "eastus"
-
-# リソースグループにタグを付与する場合（ポリシー制約等がある環境向け）
-./scripts/deploy.ps1 -Tags @{ "Environment"="Demo"; "Project"="SreAgent" }
-
-# SRE Agent のリージョンを変更する場合
-./scripts/deploy.ps1 -SreAgentLocation "swedencentral"
+# 名前やリージョンを変更する場合
+./scripts/deploy.ps1 `
+  -ResourceGroup 'rg-my-sre-demo' `
+  -Location 'japaneast' `
+  -SreAgentResourceGroup 'rg-my-sre-agent' `
+  -SreAgentLocation 'eastus2'
 ```
 
-**所要時間:** 約 20〜30 分
+スクリプトは次の順に実行します。
 
-### デプロイ後のセットアップ（ポータル: sre.azure.com）
+1. 基盤RGと空のAgent RGを作成
+2. Demo用Log Analyticsを先行作成
+3. Controlテンプレートを基盤RGへデプロイ
+4. Control Storageの出力を渡してDemoテンプレートを同じ基盤RGへデプロイ
+5. Control AppとDemo Appを各専用ACRでビルド
+6. 両Container Appをコミットハッシュタグのイメージへ更新
 
-`deploy.ps1` 完了後、以下をポータルで設定してください。
+完了時にDemo URL、Control URL、2つのRG、監視リソースID、Fault Environment IDを表示します。再実行も同じRG名とプレフィックスを使用してください。
 
-#### 1. コネクタ設定
-
-Agent は `az monitor log-analytics query` 等で直接クエリできるため、コネクタなしでも動作します。
-設定すると調査が速くなります。
-
-| コネクタ | 用途 |
-|---------|------|
-| Log Analytics | `sre-demo-law` への永続的コンテキスト |
-| Application Insights | `sre-demo-appi` への永続的コンテキスト |
-
-#### 2. ナレッジベース
-
-`knowledge/` ディレクトリのファイルを Knowledge Source にアップロード（ポータル UI から）。
-
-| ファイル | 用途 |
-|---------|------|
-| `knowledge/infrastructure-spec.md` | インフラ構成仕様 |
-| `knowledge/app-expert.md` | アプリケーション専門知識 |
-| `knowledge/db-expert.md` | DB 専門知識 |
-| `knowledge/network-expert.md` | NW 専門知識 |
-
-#### 3. インシデント応答プラン
-
-ポータルでインシデント応答プランを作成します。
-
-1. 重大度: **すべての重大度**
-2. 「Customize the incident response plan (optional)」にチェック
-3. 指示の追加: 運用モードに応じて以下のいずれかの内容を貼り付け
-
-| モード | ファイル | 説明 |
-|--------|---------|------|
-| 自立モード | `infra/prompts/incident-auto.md` | Agent が調査から対処まで自律的に実行する |
-| レビューモード | `infra/prompts/incident-review.md` | Agent は調査のみ行い、推奨アクションを提示する。変更操作は人間が実行 |
-
-4. Choose agent autonomy level: 自立モードなら **自律**、レビューモードなら **レビュー**
-
-#### 4. スケジュールタスク
-
-以下のファイルの内容をスケジュールタスクの指示として登録します。
-
-| ファイル | タスク名 | スケジュール |
-|---------|---------|------------|
-| `infra/prompts/health-check.md` | Daily Health Check | 毎日 9:00 AM |
-| `infra/prompts/cost-analysis.md` | Monthly Cost Analysis | 毎月 1 日 9:00 AM |
-
-### 一括削除
+GitHub Actions OIDCをDemo ACR/Appへ設定する場合:
 
 ```powershell
-./scripts/destroy.ps1                             # インフラ RG のみ削除（確認プロンプトあり）
-./scripts/destroy.ps1 -IncludeSreAgent             # SRE Agent RG も含めて削除
-./scripts/destroy.ps1 -NoConfirm                   # 確認なしで即削除
-./scripts/destroy.ps1 -ResourceGroup "rg-my-demo"  # RG 名を指定
+./scripts/deploy.ps1 -EnableOidc -GitHubRepo 'owner/repository'
 ```
 
-### 手動デプロイ（個別実行）
+## 参加者の手順
+
+1. `https://sre.azure.com/`を開き、指定されたAgent RGにSRE Agentを作成します。
+2. 基盤RGをAzureスコープとして接続します。
+3. `sre-demo-law`と`sre-demo-appi`を監視コンテキストへ追加します。
+4. `knowledge/`のファイルをKnowledge Sourceへ登録します。
+5. `infra/prompts/incident-auto.md`または`incident-review.md`を使ってインシデント応答プランを設定します。
+6. Demo Appで正常状態を確認し、Control Appから指定されたFaultを開始します。
+7. アラート、Agentの調査、復旧操作、成功率の回復を確認します。
+8. 演習終了時にすべてのFaultを停止またはリセットします。
+
+Agent作成と接続には、Agent RGと基盤RGへ必要なRBACが必要です。権限はRGスコープに限定し、可能ならPIMで演習時間だけ有効化してください。
+
+## アプリの使い方
+
+### Demo App
+
+サンプル業務画面です。Itemsの一覧、追加、Status更新、削除、再読込を操作できます。バックグラウンドではAUTO READ/WRITEワークロードが継続し、ユーザー操作はUSERとして記録されます。
+
+主なAPI:
+
+| API | 用途 |
+|---|---|
+| `GET /health` | プロセスのヘルスチェック |
+| `GET /ready` | SQL接続を含むレディネス確認 |
+| `GET /api/items` | Items取得 |
+| `POST /api/items` | Item追加 |
+| `PUT /api/items/:id` | Item更新 |
+| `DELETE /api/items/:id` | Item削除 |
+
+### Fault Control App
+
+Microsoft Entra IDで認証して使用します。期間、操作元、操作種別で絞り込み、時間バケットごとの成功／失敗件数と成功率を確認できます。Fault一覧にはdesired state、observed state、開始時刻、最終確認時刻が表示されます。
+
+- Reader: DashboardとFault状態を閲覧
+- Operator: Faultの開始、停止、緊急停止、リセット
+- 状態確認時刻が古い場合: 実状態を断定せず「状態確認不能」として扱う
+
+## Faultカタログ
+
+| Fault ID | 対象 | 内容 | 主な観測 |
+|---|---|---|---|
+| `app-exception` | Application | Items取得で例外 | 5xx、例外、失敗率増加 |
+| `app-latency` | Application | API応答遅延 | 応答時間増加 |
+| `app-n-plus-one` | Application/SQL | N+1クエリ | SQL依存呼出し、遅延 |
+| `vm-cpu-high` | VM | CPU高負荷 | CPUアラート |
+| `vm-memory-high` | VM | メモリ高負荷 | Committed Bytesアラート |
+| `vm-disk-pressure` | VM | Fault専用F:ディスクひっ迫 | F:空き容量アラート |
+| `sql-high-load` | SQL | SQLワーカー高負荷 | workers percentアラート |
+| `sql-deadlock` | SQL | 2セッションのデッドロック | SQLエラー、失敗増加 |
+| `network-deny` | Network | Demo通信のDeny | 接続失敗、依存関係失敗 |
+
+アプリ内3 FaultはDemo AppのFault Adapterが反映します。AzureリソースFaultはRunner/Reconciler実装と実環境検証が完了した環境でのみ使用してください。UIに表示されても、Runner未デプロイ時はdesired stateだけが更新され、observed stateはactiveになりません。
+
+FaultにTTLや自動停止はありません。停止、緊急停止、またはリセットを必ず実行してください。クライアントから任意コマンド、任意SQL、任意パス、任意Resource IDは指定できません。
+
+VMディスクFaultは`F:\SreFault\disk-pressure.bin`だけを使用し、`C:`と`D:`を操作しません。空き8%を目標とし、256 MiBを絶対下限として残します。
+
+## 監視とアラート
+
+| 対象 | 条件の概要 |
+|---|---|
+| Application | 例外、失敗要求、遅い応答 |
+| VM CPU | CPU使用率高騰 |
+| VM Memory | `\Memory\% Committed Bytes In Use`が80%超 |
+| VM Disk | `\LogicalDisk(F:)\% Free Space`低下 |
+| VM Heartbeat | Heartbeat欠落 |
+| Azure SQL | DTU/CPU、接続、`workers_percent`が60%超 |
+| Container Apps | CPUまたはMemoryが80%超 |
+
+VMログとPerfはAzure Monitor AgentとDCRでLog Analyticsへ、アプリテレメトリはApplication Insightsへ送信します。通知先は`SRE_NOTIFICATION_EMAIL`です。
+
+## 安全上の制約
+
+- 本番環境へのデプロイは禁止です。
+- DemoとControlは同じRGでもVNet、ACA Environment、ACR、Identityを分離します。
+- Control VNetはDemoのFirewall、UDR、Private DNSへ依存しません。
+- Shared Keyを無効化し、StorageアクセスはManaged IdentityとTable単位RBACを使用します。
+- Demo IdentityにVM、SQL、Firewallを変更する管理プレーン権限を付与しません。
+- Control APIは固定Faultカタログだけを受け付け、操作をAuditLogへ記録します。
+- Fault停止後はobserved stateと実リソースの回復を確認します。
+
+## トラブルシューティング
+
+| 症状 | 確認事項 |
+|---|---|
+| デプロイ前に停止する | 必須環境変数、`az login`、選択中サブスクリプション、Control Entra Client ID |
+| Bicepデプロイが失敗する | Resource Provider、リージョンのSKU/Quota、ポリシー、デプロイOperation |
+| Control Appが401/403 | App Registrationのissuer/audience、組み込み認証、Reader/Operator role claim |
+| Dashboardにデータがない | Demo IdentityのTable RBAC、両VNetのTable Private Endpoint/DNS、AUTOワークロード |
+| Faultが状態確認不能 | `lastHeartbeatAt`、Demo AppまたはRunnerのログ、Storage到達性、generation不一致 |
+| アラートが発火しない | DCR association、Perf/Eventテーブル、評価期間、Action Group、対象ディメンション |
+| Faultを停止できない | 緊急停止を要求し、Runner/Reconciler、対象プロセス、Firewall専用ルールを確認 |
+
+`az deployment group show`とContainer AppのSystem/Consoleログで、失敗した段階とManaged Identity/RBACエラーを確認してください。
+
+## クリーンアップ
+
+最初にControl Appで緊急停止またはリセットを実行し、すべてのFaultがinactiveであることを確認します。その後、既定では基盤RGとAgent RGの両方を削除します。
 
 ```powershell
-# 1. リソースグループ作成
-az group create --name rg-sre-demo --location japaneast
+./scripts/destroy.ps1
 
-# 2. 環境変数を設定（上記参照）
+# RG名を変更した場合
+./scripts/destroy.ps1 `
+  -ResourceGroup 'rg-my-sre-demo' `
+  -SreAgentResourceGroup 'rg-my-sre-agent'
 
-# 3. インフラデプロイ
-az deployment group create `
-  --resource-group rg-sre-demo `
-  --template-file infra/main.bicep `
-  --parameters infra/main.bicepparam
-
-# 4. サンプルアプリのコンテナイメージをビルド & プッシュ
-$tag = git rev-parse --short HEAD
-az acr build --registry <acr-name> --image sre-demo-app:$tag ./app/
-
-# 5. Container App のイメージを更新
-az containerapp update --name sre-demo-app --resource-group rg-sre-demo `
-  --image <acr-name>.azurecr.io/sre-demo-app:$tag
+# Agent RGを保持する場合
+./scripts/destroy.ps1 -KeepSreAgent
 ```
 
----
+`-NoConfirm`は確認なしで削除を開始します。SRE Agentの継続課金を避けるため、保持が必要な場合以外はAgent RGも削除してください。
 
-## デプロイ順序（依存関係）
+`-EnableOidc`で作成または再利用したEntraアプリ`sre-demo-github-actions`は、RG削除の対象外です。不要になった場合は、他の環境やリポジトリで使用していないことを確認してからEntra ID側で削除してください。
 
+## リポジトリ構成
+
+| パス | 内容 |
+|---|---|
+| `app/` | Demo App、AUTOワークロード、Activity Writer、アプリ内Fault Adapter |
+| `control-app/` | Dashboard、Fault API、認可、監査、固定Faultカタログ |
+| `infra/main.bicep` | Demo系Hub/Spoke、SQL、VM、監視、Demo App |
+| `infra/control-main.bicep` | Control VNet、Storage、Control ACR/ACA、Control App |
+| `infra/modules/` | 各AzureリソースのBicepモジュール |
+| `infra/prompts/` | SRE Agentの応答プランとタスク用プロンプト |
+| `knowledge/` | Agentへ登録するアプリ、DB、ネットワーク、基盤の知識 |
+| `scripts/deploy.ps1` | 2 RG作成、Control先行、Demo後続、2アプリのデプロイ |
+| `scripts/destroy.ps1` | 基盤RGとAgent RGの削除 |
+
+## ローカルテスト
+
+```powershell
+Push-Location app
+npm install
+npm test
+Pop-Location
+
+Push-Location control-app
+npm install
+npm test
+Pop-Location
 ```
-Log Analytics ──► DCR
-              ──► App Insights
-
-NSG ──► VNet Hub ──► Azure FW ──► Route Tables ──┬──► VNet Spoke1 ──┬──► Container Apps Env
-                                                  │                  ├──► ACR + Private EP
-                                                  │                  ├──► SQL + Private EP
-                                                  │                  └──► Private DNS Zones
-                                                  └──► VNet Spoke2 ──► VM-Spoke2
-
-                                                  └──► Peerings (Hub-Spoke1, Hub-Spoke2)
-
-VM-Hub は Hub VNet のサブネット作成後にデプロイ
-Container App は Container Apps Env + ACR + SQL の準備完了後にデプロイ
-```
-
-
