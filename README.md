@@ -7,21 +7,22 @@ Azure SRE Agent の作成、監視接続、障害検知、調査、復旧を体�
 
 ## 現在の実装状況
 
-現時点では**全Faultが動作する完成状態ではありません**。
+全Faultの実装はありますが、Azure実環境での作用と復旧は未検証です。
 
 | 範囲 | 状況 |
 |---|---|
-| Demo AppのCRUD、AUTOワークロード、操作イベント記録 | 実装済み |
+| Demo AppのCRUD、バックグラウンドREAD/WRITEワークロード、操作イベント記録 | 実装済み |
 | Control Appの集計グラフ、認証・認可、監査、Fault状態管理 | 実装済み |
 | アプリFault: 例外、遅延、N+1 | 実装済み |
-| VM Fault: CPU、メモリ、F:ディスク | UIとdesired stateのみ。Runner未実装 |
-| SQL Fault: 高負荷、デッドロック | UIとdesired stateのみ。Runner未実装 |
-| Network Deny | UIとdesired stateのみ。Runner未実装 |
-| Reconciler | 未実装 |
+| VM Fault: CPU、メモリ、F:ディスク | Runner実装済み、Azure実デプロイ未検証 |
+| SQL Fault: 高負荷、デッドロック | Runner実装済み、Azure実デプロイ未検証 |
+| Network Deny | 専用Firewall RCGとRunner実装済み、Azure実デプロイ未検証 |
+| Reconciler | 1分周期Jobを実装済み、Azure実デプロイ未検証 |
 | 同一基盤RG内のDemo/Control分離と空のAgent RG | Bicepとスクリプト実装済み、Azure実デプロイ未検証 |
-| Control AppからのAUTOワークロード開始・停止 | 未実装の将来拡張 |
+| 指定パブリックIPv4だけに許可するDemo ACA公開 | Bicepとスクリプト実装済み、Azure実デプロイ未検証 |
 
-Azure Fault 6種は、Runner/Reconcilerの実装と実環境での復旧検証が完了するまで演習に使用できません。
+Azure Fault 6種は、対象サブスクリプションで開始、観測、停止、復旧を確認してから演習に使用してください。
+バックグラウンドワークロードは監視データ生成用に継続実行します。Faultの開始・停止は自動化せず、Control Appからの明示操作だけで行います。
 
 ## アーキテクチャ
 
@@ -62,6 +63,8 @@ flowchart LR
 ```
 
 Control VNet は Demo のHub/Spoke VNetとピアリングせず、Demo側のFirewallとUDRを使用しません。両アプリは専用ACRからManaged Identityでイメージを取得します。操作イベント、Fault状態、監査ログは障害対象SQLではなくAzure Table Storageへ保存します。
+
+Demo Appは既定で内部ACAに配置されるため、BastionでVMへ接続し、VM内のブラウザから操作します。デプロイ時に単一のパブリックIPv4アドレスを指定した場合だけACAを公開し、そのアドレスの`/32`から直接アクセスできます。Control Appは常にインターネット公開され、Entra IDで保護されます。
 
 ## デプロイ内容
 
@@ -122,6 +125,19 @@ $env:SRE_CONTROL_ENTRA_CLIENT_ID = '<control-app-client-id>'
   -Location 'japaneast' `
   -SreAgentResourceGroup 'rg-my-sre-agent' `
   -SreAgentLocation 'eastus2'
+
+# 手元PCのパブリックIPv4からDemo Appへ直接アクセスする場合
+./scripts/deploy.ps1 -DemoAllowedSourceIp '<your-public-ipv4>'
+```
+
+`-DemoAllowedSourceIp`にはCIDRを付けず、単一のパブリックIPv4アドレスを指定します。スクリプトがACA Ingressへ`<address>/32`のAllowルールを設定し、それ以外の送信元を拒否します。省略時はインターネット公開せず、Bastion/VNet経由で操作します。
+
+Container Apps Environmentの内部／公開モードは作成後に変更できません。既存環境のモードと指定内容が異なる場合、スクリプトは変更前に停止します。対象がDemo環境であることを確認し、次の順でDemo AppとEnvironmentを削除してから再実行してください。SQL、VM、Control Appは削除されません。
+
+```powershell
+az containerapp delete --name sre-demo-app --resource-group '<infrastructure-rg>' --yes
+az containerapp env delete --name sre-demo-cae --resource-group '<infrastructure-rg>' --yes
+./scripts/deploy.ps1 -ResourceGroup '<infrastructure-rg>' -DemoAllowedSourceIp '<your-public-ipv4>'
 ```
 
 スクリプトは次の順に実行します。
@@ -131,7 +147,7 @@ $env:SRE_CONTROL_ENTRA_CLIENT_ID = '<control-app-client-id>'
 3. Controlテンプレートを基盤RGへデプロイ
 4. Control Storageの出力を渡してDemoテンプレートを同じ基盤RGへデプロイ
 5. Control AppとDemo Appを各専用ACRでビルド
-6. 両Container Appをコミットハッシュタグのイメージへ更新
+6. Container AppとJobをコミットハッシュ＋デプロイ時刻タグのイメージへ更新
 
 完了時にDemo URL、Control URL、2つのRG、監視リソースID、Fault Environment IDを表示します。再実行も同じRG名とプレフィックスを使用してください。
 
@@ -158,7 +174,7 @@ Agent作成と接続には、Agent RGと基盤RGへ必要なRBACが必要です�
 
 ### Demo App
 
-サンプル業務画面です。Itemsの一覧、追加、Status更新、削除、再読込を操作できます。バックグラウンドではAUTO READ/WRITEワークロードが継続し、ユーザー操作はUSERとして記録されます。
+サンプル業務画面です。Itemsの一覧、追加、Status更新、削除、再読込を操作できます。バックグラウンドでは監視データ生成用のREAD/WRITEワークロードが継続し、操作イベント上は`AUTO`、ユーザー操作は`USER`として記録されます。
 
 主なAPI:
 
@@ -193,11 +209,13 @@ Microsoft Entra IDで認証して使用します。期間、操作元、操作�
 | `sql-deadlock` | SQL | 2セッションのデッドロック | SQLエラー、失敗増加 |
 | `network-deny` | Network | Demo通信のDeny | 接続失敗、依存関係失敗 |
 
-アプリ内3 FaultはDemo AppのFault Adapterが反映します。AzureリソースFaultはRunner/Reconciler実装と実環境検証が完了した環境でのみ使用してください。UIに表示されても、Runner未デプロイ時はdesired stateだけが更新され、observed stateはactiveになりません。
+アプリ内3 FaultはDemo AppのFault Adapterが反映します。AzureリソースFaultはDemo ACA Environment内の専用Runnerが反映し、1分周期のReconcilerが遷移タイムアウトを検出します。Runnerをデプロイしていない場合はdesired stateだけが更新され、observed stateはactiveになりません。
 
 FaultにTTLや自動停止はありません。停止、緊急停止、またはリセットを必ず実行してください。クライアントから任意コマンド、任意SQL、任意パス、任意Resource IDは指定できません。
 
 VMディスクFaultは`F:\SreFault\disk-pressure.bin`だけを使用し、`C:`と`D:`を操作しません。空き8%を目標とし、256 MiBを絶対下限として残します。
+
+Network Denyは`SreFaultRuleCollectionGroup`だけを更新し、Spoke2 (`10.3.0.0/16`) からSpoke1 (`10.2.0.0/16`) への通信を遮断します。Control VNetは対象に含みません。SQL Faultは固定クエリだけを実行し、Demo Appが作成する専用低権限ユーザーの接続文字列をContainer Apps secretとしてRunnerへ渡します。
 
 ## 監視とアラート
 
@@ -263,12 +281,13 @@ VMログとPerfはAzure Monitor AgentとDCRでLog Analyticsへ、アプリテレ
 |---|---|
 | `app/` | Demo App、AUTOワークロード、Activity Writer、アプリ内Fault Adapter |
 | `control-app/` | Dashboard、Fault API、認可、監査、固定Faultカタログ |
+| `fault-runner/` | Azure Fault 6種の固定executor、状態更新、Reconciler |
 | `infra/main.bicep` | Demo系Hub/Spoke、SQL、VM、監視、Demo App |
 | `infra/control-main.bicep` | Control VNet、Storage、Control ACR/ACA、Control App |
 | `infra/modules/` | 各AzureリソースのBicepモジュール |
 | `infra/prompts/` | SRE Agentの応答プランとタスク用プロンプト |
 | `knowledge/` | Agentへ登録するアプリ、DB、ネットワーク、基盤の知識 |
-| `scripts/deploy.ps1` | 2 RG作成、Control先行、Demo後続、2アプリのデプロイ |
+| `scripts/deploy.ps1` | 2 RG作成、Control先行、Demo後続、アプリとFault実行系のデプロイ |
 | `scripts/destroy.ps1` | 基盤RGとAgent RGの削除 |
 
 ## ローカルテスト
@@ -280,6 +299,11 @@ npm test
 Pop-Location
 
 Push-Location control-app
+npm install
+npm test
+Pop-Location
+
+Push-Location fault-runner
 npm install
 npm test
 Pop-Location

@@ -35,6 +35,10 @@ param sqlAdminUsername string
 @description('SQL admin password')
 param sqlAdminPassword string
 
+@secure()
+@description('Password for the fixed low-privilege SQL fault runner user')
+param sqlFaultRunnerPassword string
+
 @description('Email address for alert notifications')
 param notificationEmail string
 
@@ -46,6 +50,23 @@ param faultStorageAccountName string = ''
 
 @description('Fault environment identifier for this Demo deployment; leave empty to disable fault integration')
 param faultEnvironmentId string = ''
+
+@description('Single public IPv4 address allowed to access the Demo App. Leave empty to require VNet access.')
+param demoAllowedSourceIp string = ''
+
+var effectiveDemoAllowedSourceIp = empty(demoAllowedSourceIp) ? '1.1.1.1' : demoAllowedSourceIp
+var suppliedDemoAllowedSourceIpParts = split(effectiveDemoAllowedSourceIp, '.')
+var demoAllowedSourceIpParts = concat(suppliedDemoAllowedSourceIpParts, ['', '', '', ''])
+var validIpv4Octets = map(range(0, 256), octet => string(octet))
+var demoIpOctet0 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[0])
+var demoIpOctet1 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[1])
+var demoIpOctet2 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[2])
+var demoIpOctet3 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[3])
+var demoAllowedSourceIpIsCanonical = '${demoIpOctet0}.${demoIpOctet1}.${demoIpOctet2}.${demoIpOctet3}' == effectiveDemoAllowedSourceIp
+var demoAllowedSourceIpHasValidOctets = demoIpOctet0 >= 0 && demoIpOctet1 >= 0 && demoIpOctet2 >= 0 && demoIpOctet3 >= 0
+var demoAllowedSourceIpIsReserved = demoIpOctet0 == 0 || demoIpOctet0 == 10 || demoIpOctet0 == 127 || (demoIpOctet0 == 100 && demoIpOctet1 >= 64 && demoIpOctet1 <= 127) || (demoIpOctet0 == 169 && demoIpOctet1 == 254) || (demoIpOctet0 == 172 && demoIpOctet1 >= 16 && demoIpOctet1 <= 31) || (demoIpOctet0 == 192 && demoIpOctet1 == 0 && (demoIpOctet2 == 0 || demoIpOctet2 == 2)) || (demoIpOctet0 == 192 && demoIpOctet1 == 88 && demoIpOctet2 == 99) || (demoIpOctet0 == 192 && demoIpOctet1 == 168) || (demoIpOctet0 == 198 && (demoIpOctet1 == 18 || demoIpOctet1 == 19)) || (demoIpOctet0 == 198 && demoIpOctet1 == 51 && demoIpOctet2 == 100) || (demoIpOctet0 == 203 && demoIpOctet1 == 0 && demoIpOctet2 == 113) || demoIpOctet0 >= 224
+var demoAllowedSourceIpIsPublic = empty(demoAllowedSourceIp) || (length(suppliedDemoAllowedSourceIpParts) == 4 && demoAllowedSourceIpIsCanonical && demoAllowedSourceIpHasValidOctets && !demoAllowedSourceIpIsReserved)
+var validatedDemoAllowedSourceIp = demoAllowedSourceIpIsPublic ? demoAllowedSourceIp : fail('demoAllowedSourceIp must be a single public IPv4 address without CIDR notation.')
 
 // ============================================================
 // Variables
@@ -597,10 +618,12 @@ module containerApps 'modules/containerApps.bicep' = {
     acrLoginServer: containerRegistry.outputs.loginServer
     managedIdentityId: managedIdentity.id
     sqlConnectionString: 'Server=tcp:${sqlDatabase.outputs.serverFqdn},1433;Initial Catalog=${sqlDatabase.outputs.databaseName};User ID=${sqlAdminUsername};Password=${sqlAdminPassword};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;Application Name=${prefix}-app;'
+    sqlFaultRunnerPassword: sqlFaultRunnerPassword
     logAnalyticsWorkspaceId: logAnalytics.id
     tableEndpoint: faultTableEndpoint
     faultEnvironmentId: faultEnvironmentId
     enableFaultInjection: enableFaultIntegration
+    allowedSourceIpAddress: validatedDemoAllowedSourceIp
   }
   dependsOn: [
     acrPullRole
@@ -796,6 +819,27 @@ module vmSpoke2 'modules/vm.bicep' = {
   }
 }
 
+module faultExecution 'modules/faultExecution.bicep' = if (enableFaultIntegration) {
+  name: 'deploy-fault-execution'
+  params: {
+    location: location
+    prefix: prefix
+    managedEnvironmentId: containerApps.outputs.environmentId
+    containerImage: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+    acrLoginServer: containerRegistry.outputs.loginServer
+    acrName: acrName
+    tableEndpoint: faultTableEndpoint
+    storageAccountName: faultStorageAccountName
+    faultEnvironmentId: faultEnvironmentId
+    subscriptionId: subscription().subscriptionId
+    resourceGroupName: resourceGroup().name
+    vmName: vmHub.outputs.vmName
+    firewallPolicyName: azureFirewall.outputs.firewallPolicyName
+    firewallRuleCollectionGroupName: azureFirewall.outputs.faultRuleCollectionGroupName
+    sqlConnectionString: 'Server=tcp:${sqlDatabase.outputs.serverFqdn},1433;Initial Catalog=${sqlDatabase.outputs.databaseName};User ID=sre_fault_runner;Password=${sqlFaultRunnerPassword};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;Application Name=${prefix}-fault-runner;'
+  }
+}
+
 // ============================================================
 // Outputs
 // ============================================================
@@ -827,9 +871,16 @@ output logAnalyticsWorkspaceName string = logAnalytics.name
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
 output firewallPrivateIp string = azureFirewall.outputs.privateIp
 output firewallPublicIp string = azureFirewall.outputs.publicIp
+output firewallPolicyId string = azureFirewall.outputs.firewallPolicyId
+output faultRuleCollectionGroupId string = azureFirewall.outputs.faultRuleCollectionGroupId
 output acrLoginServer string = containerRegistry.outputs.loginServer
 output sqlServerFqdn string = sqlDatabase.outputs.serverFqdn
+output sqlDatabaseName string = sqlDatabase.outputs.databaseName
 output containerAppFqdn string = containerApps.outputs.appFqdn
+output containerAppPublicAccessEnabled bool = containerApps.outputs.isPubliclyAccessible
 output containerAppStaticIp string = containerApps.outputs.staticIp
 output vmHubPrivateIp string = vmHub.outputs.privateIp
+output vmHubId string = vmHub.outputs.vmId
 output vmSpoke2PrivateIp string = vmSpoke2.outputs.privateIp
+output faultRunnerId string = enableFaultIntegration ? faultExecution!.outputs.runnerId : ''
+output faultReconcilerId string = enableFaultIntegration ? faultExecution!.outputs.reconcilerId : ''

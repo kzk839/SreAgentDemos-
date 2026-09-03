@@ -4,6 +4,9 @@
 
 .PARAMETER ControlEntraClientId
   Control App の Entra クライアント ID。既定値は SRE_CONTROL_ENTRA_CLIENT_ID
+.PARAMETER DemoAllowedSourceIp
+    Demo App へのインターネットアクセスを許可する単一のパブリック IPv4 アドレス。
+    省略時は内部 ACA のままとし、VNet 内からのみアクセス可能。
 .PARAMETER EnableOidc
   Demo ACR/App 用 GitHub Actions OIDC 設定を有効化
 #>
@@ -14,12 +17,15 @@ param(
     [string]$SreAgentLocation = "eastus2",
     [string]$ControlPrefix = "srectrl",
     [string]$ControlEntraClientId = [Environment]::GetEnvironmentVariable("SRE_CONTROL_ENTRA_CLIENT_ID"),
+    [string]$DemoAllowedSourceIp = "",
     [hashtable]$Tags = @{},
     [string]$GitHubRepo = "",
     [switch]$EnableOidc
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path $PSScriptRoot 'deploy-validation.ps1')
 
 function Invoke-AzCommand {
     param([string[]]$Arguments, [string]$FailureMessage)
@@ -34,6 +40,26 @@ function Invoke-GhCommand {
     if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
 }
 
+function Assert-DemoEnvironmentMode {
+    param([string]$ResourceGroupName, [string]$EnvironmentName, [string]$AllowedSourceIp)
+
+    $resourceGroupExists = Invoke-AzCommand @("group", "exists", "--name", $ResourceGroupName, "-o", "tsv") `
+        "インフラ RG '$ResourceGroupName' の存在確認に失敗しました。"
+    if (-not [System.Convert]::ToBoolean($resourceGroupExists)) { return }
+
+    $existingEnvironmentInternal = Invoke-AzCommand @(
+        "containerapp", "env", "list", "--resource-group", $ResourceGroupName,
+        "--query", "[?name=='$EnvironmentName'].properties.vnetConfiguration.internal | [0]", "-o", "tsv"
+    ) "Demo Container Apps Environment の状態を取得できませんでした。"
+    if ([string]::IsNullOrWhiteSpace($existingEnvironmentInternal)) { return }
+
+    $requestedEnvironmentInternal = [string]::IsNullOrWhiteSpace($AllowedSourceIp)
+    $currentEnvironmentInternal = [System.Convert]::ToBoolean($existingEnvironmentInternal)
+    if ($currentEnvironmentInternal -ne $requestedEnvironmentInternal) {
+        throw "既存の Demo Container Apps Environment '$EnvironmentName' は内部/公開モードを変更できません。README の手順で Demo App と Environment を再作成してから再実行してください。"
+    }
+}
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " SRE Agent Demo - Deploy" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -42,6 +68,11 @@ foreach ($variableName in @("SRE_ADMIN_PASSWORD", "SRE_SQL_PASSWORD", "SRE_NOTIF
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($variableName))) {
         throw "環境変数 '$variableName' が設定されていません。"
     }
+}
+if ([string]::IsNullOrWhiteSpace($env:SRE_SQL_FAULT_RUNNER_PASSWORD)) {
+    $passwordBytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($passwordBytes)
+    $env:SRE_SQL_FAULT_RUNNER_PASSWORD = [Convert]::ToBase64String($passwordBytes)
 }
 if ([string]::IsNullOrWhiteSpace($ControlEntraClientId)) {
     throw "環境変数 SRE_CONTROL_ENTRA_CLIENT_ID または -ControlEntraClientId を指定してください。"
@@ -52,6 +83,13 @@ if ($ControlPrefix -notmatch '^[a-z0-9]{2,10}$') {
 if ($ResourceGroup -eq $SreAgentResourceGroup) {
     throw "-ResourceGroup と -SreAgentResourceGroup には異なる名前を指定してください。"
 }
+$DemoAllowedSourceIp = $DemoAllowedSourceIp.Trim()
+if (-not [string]::IsNullOrWhiteSpace($DemoAllowedSourceIp) -and -not (Test-PublicIPv4Address $DemoAllowedSourceIp)) {
+    throw "-DemoAllowedSourceIp には CIDR を付けず、単一のパブリック IPv4 アドレスを指定してください。"
+}
+
+$demoEnvironmentName = 'sre-demo-cae'
+Assert-DemoEnvironmentMode $ResourceGroup $demoEnvironmentName $DemoAllowedSourceIp
 
 # --- 1. リソースグループ作成 ---
 Write-Host "`n[1/8] リソースグループを作成..." -ForegroundColor Yellow
@@ -65,6 +103,7 @@ Invoke-AzCommand (@("group", "create", "--name", $SreAgentResourceGroup, "--loca
     "空の Agent RG '$SreAgentResourceGroup' の作成に失敗しました。" | Out-Null
 Write-Host "  インフラ RG: $ResourceGroup ($Location)" -ForegroundColor Green
 Write-Host "  空の Agent RG: $SreAgentResourceGroup ($SreAgentLocation)" -ForegroundColor Green
+Assert-DemoEnvironmentMode $ResourceGroup $demoEnvironmentName $DemoAllowedSourceIp
 
 $account = Invoke-AzCommand @("account", "show", "-o", "json") `
     "Azure アカウント情報を取得できませんでした。az login を確認してください。" | ConvertFrom-Json
@@ -130,6 +169,7 @@ Write-Host "  Control App: $controlAppFqdn" -ForegroundColor Green
 $env:SRE_CONTROL_RESOURCE_GROUP = $ResourceGroup
 $env:SRE_FAULT_STORAGE_ACCOUNT = $faultStorageAccountName
 $env:SRE_FAULT_ENVIRONMENT_ID = $faultEnvironmentId
+$env:SRE_DEMO_ALLOWED_SOURCE_IP = $DemoAllowedSourceIp
 Write-Host "`n[4/8] Demo インフラを同じインフラ RG にデプロイ（約 20～30 分）..." -ForegroundColor Yellow
 $demoResult = Invoke-AzCommand @(
     "deployment", "group", "create", "--name", "demo-infrastructure",
@@ -146,18 +186,21 @@ if ([string]::IsNullOrWhiteSpace($demoAcrLoginServer) -or [string]::IsNullOrWhit
 }
 
 # --- 5. 各 ACR で各アプリをビルド ---
-$imageTag = (& git rev-parse --short HEAD 2>$null)
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($imageTag)) {
+$commitTag = (& git rev-parse --short HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitTag)) {
     throw "Git コミットハッシュを取得できませんでした。Git リポジトリの状態を確認してください。"
 }
-Write-Host "`n[5/8] Control/Demo イメージを別々の ACR でビルド: $imageTag" -ForegroundColor Yellow
+$imageTag = "$commitTag-$(Get-Date -Format 'yyyyMMddHHmmss')"
+Write-Host "`n[5/8] Control/Demo/Fault Runner イメージをビルド: $imageTag" -ForegroundColor Yellow
 Invoke-AzCommand @("acr", "build", "--registry", $controlAcrName, "--image", "sre-control-app:$imageTag", "./control-app") `
     "Control App の ACR ビルドに失敗しました。" | Out-Null
 Invoke-AzCommand @("acr", "build", "--registry", $demoAcrName, "--image", "sre-demo-app:$imageTag", "./app") `
     "Demo App の ACR ビルドに失敗しました。" | Out-Null
+Invoke-AzCommand @("acr", "build", "--registry", $demoAcrName, "--image", "sre-fault-runner:$imageTag", "./fault-runner") `
+    "Fault Runner の ACR ビルドに失敗しました。" | Out-Null
 
-# --- 6. 両 Container App を更新 ---
-Write-Host "`n[6/8] Control/Demo Container App のイメージを更新..." -ForegroundColor Yellow
+# --- 6. Container App と Job を更新 ---
+Write-Host "`n[6/8] Control/Demo/Fault Runner のイメージを更新..." -ForegroundColor Yellow
 Invoke-AzCommand @(
     "containerapp", "update", "--name", $controlAppName, "--resource-group", $ResourceGroup,
     "--image", "$controlAcrLoginServer/sre-control-app:$imageTag", "-o", "none"
@@ -166,6 +209,14 @@ Invoke-AzCommand @(
     "containerapp", "update", "--name", $demoAppName, "--resource-group", $ResourceGroup,
     "--image", "$demoAcrLoginServer/sre-demo-app:$imageTag", "-o", "none"
 ) "Demo Container App の更新に失敗しました。" | Out-Null
+Invoke-AzCommand @(
+    "containerapp", "update", "--name", "sre-demo-fault-runner", "--resource-group", $ResourceGroup,
+    "--image", "$demoAcrLoginServer/sre-fault-runner:$imageTag", "-o", "none"
+) "Fault Runner Container App の更新に失敗しました。" | Out-Null
+Invoke-AzCommand @(
+    "containerapp", "job", "update", "--name", "sre-demo-fault-reconciler", "--resource-group", $ResourceGroup,
+    "--image", "$demoAcrLoginServer/sre-fault-runner:$imageTag", "-o", "none"
+) "Fault Reconciler Job の更新に失敗しました。" | Out-Null
 
 # --- 7. GitHub Actions OIDC（Demo の ACR/App のみ） ---
 if (-not $EnableOidc) {
@@ -278,6 +329,11 @@ $appInsightsId = Invoke-AzCommand @(
 Write-Host "`n[8/8] デプロイ完了" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Demo URL:          https://$demoAppFqdn" -ForegroundColor White
+if ([string]::IsNullOrWhiteSpace($DemoAllowedSourceIp)) {
+    Write-Host "  Demo Access:       Private (Bastion/VNet required)" -ForegroundColor White
+} else {
+    Write-Host "  Demo Access:       Public, allowed from $DemoAllowedSourceIp/32" -ForegroundColor White
+}
 Write-Host "  Control URL:       https://$controlAppFqdn" -ForegroundColor White
 Write-Host "  インフラ RG:       $ResourceGroup" -ForegroundColor White
 Write-Host "  空の Agent RG:     $SreAgentResourceGroup" -ForegroundColor White

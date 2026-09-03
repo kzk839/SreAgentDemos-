@@ -1,0 +1,16 @@
+{
+  "name": "sre-fault-runner",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@azure/arm-compute": "^21.4.0",
+    "@azure/arm-network": "^35.0.0",
+    "@azure/data-tables": "^13.3.0",
+    "@azure/identity": "^4.11.1",
+    "mssql": "^11.0.1"
+  }
+}

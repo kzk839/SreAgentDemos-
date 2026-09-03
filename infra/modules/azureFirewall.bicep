@@ -121,6 +121,15 @@ resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionG
   }
 }
 
+resource faultRuleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2024-01-01' = {
+  parent: firewallPolicy
+  name: 'SreFaultRuleCollectionGroup'
+  properties: {
+    priority: 100
+    ruleCollections: []
+  }
+}
+
 resource firewall 'Microsoft.Network/azureFirewalls@2024-01-01' = {
   name: name
   location: location
@@ -159,6 +168,7 @@ resource firewall 'Microsoft.Network/azureFirewalls@2024-01-01' = {
   }
   dependsOn: [
     ruleCollectionGroup
+    faultRuleCollectionGroup
   ]
 }
 
@@ -186,3 +196,7 @@ resource diagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-pr
 output privateIp string = firewall.properties.ipConfigurations[0].properties.privateIPAddress
 output publicIp string = publicIp.properties.ipAddress
 output id string = firewall.id
+output firewallPolicyId string = firewallPolicy.id
+output firewallPolicyName string = firewallPolicy.name
+output faultRuleCollectionGroupId string = faultRuleCollectionGroup.id
+output faultRuleCollectionGroupName string = faultRuleCollectionGroup.name

@@ -76,6 +76,21 @@ async function initDb() {
         CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
       )
     `);
+    const faultRunnerPassword = process.env.SQL_FAULT_RUNNER_PASSWORD;
+    if (faultRunnerPassword) {
+      if (!/^[A-Za-z0-9+/=]{24,128}$/.test(faultRunnerPassword)) throw new Error('SQL_FAULT_RUNNER_PASSWORD has an invalid format');
+      await connection.request().query(`
+        IF OBJECT_ID('dbo.SreFaultLocks') IS NULL
+        CREATE TABLE dbo.SreFaultLocks (Id INT NOT NULL PRIMARY KEY, Value INT NOT NULL);
+        IF NOT EXISTS (SELECT 1 FROM dbo.SreFaultLocks)
+        INSERT INTO dbo.SreFaultLocks (Id, Value) VALUES (1, 0), (2, 0);
+        IF DATABASE_PRINCIPAL_ID('sre_fault_runner') IS NULL
+          CREATE USER [sre_fault_runner] WITH PASSWORD = '${faultRunnerPassword}';
+        ELSE
+          ALTER USER [sre_fault_runner] WITH PASSWORD = '${faultRunnerPassword}';
+        GRANT SELECT, UPDATE ON OBJECT::dbo.SreFaultLocks TO [sre_fault_runner];
+      `);
+    }
     const { recordset } = await connection.request().query('SELECT COUNT(*) AS cnt FROM Items');
     if (recordset[0].cnt < 10) {
       const values = [];

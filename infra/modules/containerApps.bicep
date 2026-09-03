@@ -33,6 +33,10 @@ param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-hellowo
 @description('SQL connection string')
 param sqlConnectionString string = ''
 
+@secure()
+@description('Password for the fixed low-privilege SQL fault runner user')
+param sqlFaultRunnerPassword string = ''
+
 @description('Log Analytics Workspace resource ID for diagnostic settings')
 param logAnalyticsWorkspaceId string = ''
 
@@ -45,13 +49,16 @@ param faultEnvironmentId string = ''
 @description('Enable application fault injection behavior')
 param enableFaultInjection bool = false
 
+@description('Single public IPv4 address allowed to access the Demo App. Leave empty to keep the environment internal.')
+param allowedSourceIpAddress string = ''
+
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
   properties: {
     vnetConfiguration: {
       infrastructureSubnetId: infrastructureSubnetId
-      internal: true
+      internal: empty(allowedSourceIpAddress)
     }
     appLogsConfiguration: {
       destination: 'log-analytics'
@@ -83,18 +90,34 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: environment.id
     configuration: {
-      secrets: !empty(sqlConnectionString)
-        ? [
+      secrets: concat(
+        !empty(sqlConnectionString) ? [
             {
               name: 'sql-connection-string'
               value: sqlConnectionString
             }
-          ]
-        : []
+          ] : [],
+        !empty(sqlFaultRunnerPassword) ? [
+          {
+            name: 'sql-fault-runner-password'
+            value: sqlFaultRunnerPassword
+          }
+        ] : []
+      )
       ingress: {
         external: true
         targetPort: 8080
         transport: 'auto'
+        ipSecurityRestrictions: empty(allowedSourceIpAddress)
+          ? []
+          : [
+              {
+                name: 'AllowDeploymentOperator'
+                description: 'Allow the deployment-specified operator public IPv4 address'
+                ipAddressRange: '${allowedSourceIpAddress}/32'
+                action: 'Allow'
+              }
+            ]
       }
       registries: !empty(acrLoginServer) && !empty(managedIdentityId)
         ? [
@@ -150,6 +173,14 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
                   {
                     name: 'SQL_CONNECTION_STRING'
                     secretRef: 'sql-connection-string'
+                  }
+                ]
+              : [],
+            !empty(sqlFaultRunnerPassword)
+              ? [
+                  {
+                    name: 'SQL_FAULT_RUNNER_PASSWORD'
+                    secretRef: 'sql-fault-runner-password'
                   }
                 ]
               : []
@@ -215,3 +246,4 @@ output defaultDomain string = environment.properties.defaultDomain
 output staticIp string = environment.properties.staticIp
 output appFqdn string = containerApp.properties.configuration.ingress.fqdn
 output appId string = containerApp.id
+output isPubliclyAccessible bool = !empty(allowedSourceIpAddress)
