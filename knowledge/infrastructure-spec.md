@@ -2,7 +2,7 @@
 
 ## 概要
 
-Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container Apps (Spoke1) 上の Node.js アプリが Azure SQL Database に接続し、VM (Hub/Spoke2) から Azure Firewall 経由でアクセスする構成。
+1つの基盤リソースグループ内に、業務アプリケーションを配置するDemo Planeと運用画面を配置するControl Planeを分離して構築するAzure環境。Demo PlaneはHub-Spokeネットワーク、Node.js Demo App、Azure SQL Database、VM、Azure Firewallで構成する。Control Planeは独立したVNet、Container Apps Environment、ACR、Managed Identityを使用し、Demo側のFirewallとUDRに依存しない。SRE Agent用リソースグループは別に作成し、デプロイ直後は空とする。
 
 ---
 
@@ -46,17 +46,18 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 └───────────────────────┘
 ```
 
-**通信フロー:** Hub-Spoke 間の全通信は Azure Firewall を経由（UDR で強制）
+**通信フロー:** Demo PlaneのHub-Spoke間通信はAzure Firewallを経由する。Control VNetはHub-Spokeとピアリングせず、Demo側のFirewallとUDRを使用しない。
 
 ---
 
 ## IP アドレス設計
 
-| VNet | アドレス空間 | AzureFirewallSubnet | AzureFirewallManagementSubnet | sn-default | sn-container-apps | sn-private-endpoints |
-|------|-------------|---------------------|-------------------------------|------------|-------------------|---------------------|
-| Hub | 10.1.0.0/16 | 10.1.1.0/26 | 10.1.3.0/26 | 10.1.2.0/24 | — | — |
-| Spoke1 | 10.2.0.0/16 | — | — | 10.2.0.0/23 | 10.2.2.0/24 |
-| Spoke2 | 10.3.0.0/16 | — | 10.3.1.0/24 | — | — |
+| VNet | アドレス空間 | 主なサブネット |
+|------|-------------|----------------|
+| Hub | 10.1.0.0/16 | AzureFirewallSubnet: 10.1.1.0/26、sn-default: 10.1.2.0/24、AzureFirewallManagementSubnet: 10.1.3.0/26 |
+| Spoke1 | 10.2.0.0/16 | sn-container-apps: 10.2.0.0/23、sn-private-endpoints: 10.2.2.0/24 |
+| Spoke2 | 10.3.0.0/16 | sn-default: 10.3.1.0/24 |
+| Control | 10.4.0.0/16 | snet-aca-infrastructure: 10.4.0.0/23、snet-private-endpoints: 10.4.2.0/24 |
 
 > **Note:** Container Apps Environment には最低 /23 のサブネットが必要
 
@@ -68,7 +69,7 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 
 | リソース | 名前 | 説明 |
 |---------|------|------|
-| VNet × 3 | `{prefix}-vnet-hub`, `spoke1`, `spoke2` | 上記 IP 設計に基づく |
+| VNet × 4 | `{prefix}-vnet-hub`, `spoke1`, `spoke2`, `{prefix}-control-vnet` | Demo側3 VNetと独立Control VNet |
 | NSG (VM 用) | `{prefix}-nsg-default` | VM サブネット共通。RDP (10.0.0.0/8 → 3389) と ICMP を許可 |
 | NSG (PE 用) | `{prefix}-nsg-private-endpoints` | Spoke1 sn-private-endpoints 用。HTTPS (443) と SQL (1433) のみ内部から許可、他全拒否 |
 | Azure Firewall | `{prefix}-afw` | Hub VNet に配置。Basic SKU |
@@ -80,16 +81,27 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 | Azure Bastion × 2 | `{prefix}-bastion-hub`, `bastion-spoke2` | Developer SKU（無料）。同一 VNet 内の VM のみ接続可能 |
 | Private DNS Zone | `privatelink.azurecr.io` | ACR Private Endpoint 用。Hub VNet にリンク |
 | Private DNS Zone | `privatelink.database.windows.net` | Azure SQL Private Endpoint 用。Hub VNet にリンク |
+| Private DNS Zone | `privatelink.table.core.windows.net` | Azure Table Storage Private Endpoint用。DemoとControlの各VNetにリンク |
 
-### アプリケーション (Spoke1)
+### Demoアプリケーション (Spoke1)
 
 | リソース | 名前 | 説明 |
 |---------|------|------|
-| Container Apps Environment | `{prefix}-cae` | Spoke1 VNet 内 (sn-container-apps) にデプロイ |
-| Container App | `{prefix}-app` | サンプル REST API アプリ。Azure SQL に接続 |
+| Container Apps Environment | `{prefix}-cae` | Spoke1 VNet内にデプロイ。許可IPv4未指定時は内部、指定時は外部Environment |
+| Container App | `{prefix}-app` | サンプルREST API。既定は内部公開。許可IPv4指定時だけ`/32`のIngress制限で公開 |
 | Azure Container Registry | `{prefix}acr` | コンテナイメージ格納。Private Endpoint 経由で VNet 内アクセス。パブリックアクセスは有効（`az acr build` 用） |
 | ACR Private Endpoint | `{prefix}-pe-acr` | Spoke1 sn-private-endpoints 内 |
 | User Assigned Managed Identity | `{prefix}-id-app` | Container App → ACR Pull + SQL 接続に使用 |
+
+### Control Plane
+
+| リソース | 説明 |
+|---------|------|
+| Control App | 常時外部公開し、Microsoft Entra IDの組み込み認証で保護。Dashboardと運用操作を提供 |
+| Control Container Apps Environment | Control VNet内の外部Environment。Demo Environmentとは分離 |
+| Control ACR / Managed Identity | Demo側とは別リソース。Managed Identityでイメージを取得 |
+| Azure Table Storage | 操作イベント、運用状態、監査ログを保持。Shared Keyは使用せず、Table単位RBACでアクセス |
+| Table Private Endpoint / Private DNS | Demo AppとControl Appからのアクセスに使用 |
 
 ### データベース (Spoke1)
 
@@ -114,6 +126,7 @@ Hub-Spoke ネットワーク構成上に構築された Azure 環境。Container
 |---------|------|------|
 | Log Analytics Workspace | `{prefix}-law` | PerGB2018 SKU, 保持期間 30 日 |
 | Application Insights | `{prefix}-appi` | Container App のアプリ監視。Log Analytics に接続 |
+| Control Log Analytics | Control Container Apps Environmentのログを収集 |
 | Data Collection Rule | `{prefix}-dcr-windows` | パフォーマンスカウンター（システム + プロセスレベル）+ Windows イベントログ |
 | Azure Monitor Agent | 各 VM に拡張機能として導入 | 自動アップグレード有効 |
 | DCR Association × 2 | 各 VM にスコープ | DCR を各 VM に関連付け |
@@ -218,4 +231,5 @@ Perf
 ### テスト時の注意事項
 
 - **ヘルスプローブの除外:** Container Apps のヘルスプローブ (`/health`, `/ready`) は Application Insights テレメトリから除外されています（`server.js` の TelemetryProcessor）。これによりプローブのリクエストがメトリクス平均を希釈することを防止しています。
-- **VNet 内部アクセス:** Container App は `internal: true` のため、VNet 内の VM（Azure Bastion 経由）からリクエストを送信してください。
+- **Demo Appアクセス:** 既定はVNet内のVMへBastion接続してアクセスする。単一の許可IPv4を指定して公開した環境では、その送信元からだけ直接アクセスできる。
+- **Control Appアクセス:** 外部URLへアクセスし、Microsoft Entra IDで認証する。
