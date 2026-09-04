@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Control と Demo を含むインフラ RG を削除します。継続課金を防ぐため、
-  既定では参加者用 SRE Agent RG も削除します。
+    既定では SRE Agent RG も削除します。
 
 .PARAMETER KeepSreAgent
   SRE Agent リソースグループを削除せず保持する

@@ -16,7 +16,7 @@ function requireBodyKeys(allowedKeys) {
 
 function createApp(options) {
   const app = express();
-  const authorization = createAuthorization({ disabled: options.authDisabled });
+  const authorization = createAuthorization();
   const mutationsEnabled = options.mutationsEnabled === true;
 
   app.disable('x-powered-by');
@@ -27,14 +27,14 @@ function createApp(options) {
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
   app.use('/api', authorization.authenticate);
-  app.get('/api/dashboard', authorization.requireRole('Reader'), async (req, res, next) => {
+  app.get('/api/dashboard', async (req, res, next) => {
     try { res.json(await options.activityStore.dashboard(req.query)); } catch (error) { next(error); }
   });
-  app.get('/api/faults', authorization.requireRole('Reader'), async (_req, res, next) => {
+  app.get('/api/faults', async (_req, res, next) => {
     try { res.json({ faults: await options.faultController.list() }); } catch (error) { next(error); }
   });
 
-  app.use('/api', authorization.requireRole('Operator'), authorization.requireSameOrigin, (req, res, next) => {
+  app.use('/api', authorization.requireSameOrigin, (req, res, next) => {
     if (!mutationsEnabled) return res.status(503).json({ error: 'Fault injection is disabled' });
     return next();
   });

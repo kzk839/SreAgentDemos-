@@ -8,14 +8,11 @@ param location string
 @description('Resource name prefix')
 param prefix string
 
-@description('Control plane virtual network address space')
-param vnetAddressPrefix string = '10.4.0.0/16'
+@description('Existing virtual network resource ID containing the Control plane subnets')
+param virtualNetworkId string
 
-@description('Container Apps infrastructure subnet address prefix')
-param infrastructureSubnetPrefix string = '10.4.0.0/23'
-
-@description('Private endpoint subnet address prefix')
-param privateEndpointSubnetPrefix string = '10.4.2.0/24'
+@description('Existing delegated subnet resource ID for the Control Container Apps Environment')
+param infrastructureSubnetId string
 
 @description('Control App container image; replace the placeholder image after publishing to the dedicated registry')
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
@@ -25,14 +22,11 @@ param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-hellowo
 @description('Control App container target port')
 param targetPort int = 80
 
-@description('Microsoft Entra application client ID used by Container Apps built-in authentication')
-param entraClientId string
-
-@description('Microsoft Entra OpenID Connect issuer URL, for example https://login.microsoftonline.com/{tenant-id}/v2.0')
-param entraIssuer string
-
 @description('Identifier of the fault environment controlled by this application')
 param faultEnvironmentId string
+
+@description('Single public IPv4 address allowed to access the Control App. Leave empty to keep the environment internal.')
+param allowedSourceIpAddress string = ''
 
 @description('Existing fault state storage account name')
 param storageAccountName string
@@ -89,43 +83,6 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
-resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-01-01' = {
-  name: '${prefix}-vnet'
-  location: location
-  properties: {
-    addressSpace: {
-      addressPrefixes: [
-        vnetAddressPrefix
-      ]
-    }
-  }
-}
-
-resource infrastructureSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
-  parent: virtualNetwork
-  name: 'snet-aca-infrastructure'
-  properties: {
-    addressPrefix: infrastructureSubnetPrefix
-    delegations: [
-      {
-        name: 'Microsoft.App.environments'
-        properties: {
-          serviceName: 'Microsoft.App/environments'
-        }
-      }
-    ]
-  }
-}
-
-resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
-  parent: virtualNetwork
-  name: 'snet-private-endpoints'
-  properties: {
-    addressPrefix: privateEndpointSubnetPrefix
-    privateEndpointNetworkPolicies: 'Disabled'
-  }
-}
-
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: '${prefix}-cae'
   location: location
@@ -138,8 +95,8 @@ resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
       }
     }
     vnetConfiguration: {
-      infrastructureSubnetId: infrastructureSubnet.id
-      internal: false
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: empty(allowedSourceIpAddress)
     }
     workloadProfiles: [
       {
@@ -204,60 +161,17 @@ resource auditTableRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-
   }
 }
 
-resource tablePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: 'privatelink.table.${environment().suffixes.storage}'
-  location: 'global'
-}
-
-resource tablePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  parent: tablePrivateDnsZone
-  name: '${prefix}-table-link'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: virtualNetwork.id
-    }
-  }
-}
-
-resource tablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: '${prefix}-table-pe'
-  location: location
-  properties: {
-    privateLinkServiceConnections: [
-      {
-        name: 'table'
-        properties: {
-          groupIds: [
-            'table'
-          ]
-          privateLinkServiceId: storageAccount.id
-        }
-      }
+module controlCaePrivateDns 'privateDnsZone.bicep' = if (empty(allowedSourceIpAddress)) {
+  name: 'deploy-control-cae-dns'
+  params: {
+    zoneName: managedEnvironment.properties.defaultDomain
+    vnetLinks: [
+      { name: '${prefix}-cae-link', vnetId: virtualNetworkId }
     ]
-    subnet: {
-      id: privateEndpointSubnet.id
-    }
-  }
-}
-
-resource tablePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
-  parent: tablePrivateEndpoint
-  name: 'default'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'table'
-        properties: {
-          privateDnsZoneId: tablePrivateDnsZone.id
-        }
-      }
+    aRecords: [
+      { name: '*', ipv4Address: managedEnvironment.properties.staticIp }
     ]
   }
-  dependsOn: [
-    tablePrivateDnsLink
-  ]
 }
 
 resource controlApp 'Microsoft.App/containerApps@2024-03-01' = {
@@ -278,6 +192,16 @@ resource controlApp 'Microsoft.App/containerApps@2024-03-01' = {
         external: true
         targetPort: targetPort
         transport: 'auto'
+        ipSecurityRestrictions: empty(allowedSourceIpAddress)
+          ? []
+          : [
+              {
+                name: 'AllowDeploymentOperator'
+                description: 'Allow the deployment-specified operator public IPv4 address'
+                ipAddressRange: '${allowedSourceIpAddress}/32'
+                action: 'Allow'
+              }
+            ]
       }
       registries: [
         {
@@ -312,10 +236,6 @@ resource controlApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'FAULT_ENVIRONMENT_ID'
               value: faultEnvironmentId
             }
-            {
-              name: 'AUTH_DISABLED'
-              value: 'false'
-            }
           ]
           resources: {
             cpu: json('0.5')
@@ -334,37 +254,17 @@ resource controlApp 'Microsoft.App/containerApps@2024-03-01' = {
     activityTableRoleAssignment
     faultStateTableRoleAssignment
     auditTableRoleAssignment
-    tablePrivateDnsZoneGroup
+    controlCaePrivateDns
   ]
-}
-
-resource controlAppAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = {
-  parent: controlApp
-  name: 'current'
-  properties: {
-    globalValidation: {
-      redirectToProvider: 'azureActiveDirectory'
-      unauthenticatedClientAction: 'RedirectToLoginPage'
-    }
-    identityProviders: {
-      azureActiveDirectory: {
-        enabled: true
-        registration: {
-          clientId: entraClientId
-          openIdIssuer: entraIssuer
-        }
-      }
-    }
-    platform: {
-      enabled: true
-    }
-  }
 }
 
 output containerAppId string = controlApp.id
 output containerAppFqdn string = controlApp.properties.configuration.ingress.fqdn
+output defaultDomain string = managedEnvironment.properties.defaultDomain
+output staticIp string = managedEnvironment.properties.staticIp
 output managedEnvironmentId string = managedEnvironment.id
 output managedIdentityId string = controlIdentity.id
 output registryId string = registry.id
 output registryLoginServer string = registry.properties.loginServer
-output virtualNetworkId string = virtualNetwork.id
+output virtualNetworkId string = virtualNetworkId
+output isPubliclyAccessible bool = !empty(allowedSourceIpAddress)

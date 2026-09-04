@@ -5,7 +5,6 @@ const elements = Object.fromEntries(['window', 'bucket', 'source', 'type', 'succ
 
 async function request(url, options) {
   const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
-  if (response.status === 401) { window.location.assign('/.auth/login/aad'); throw new Error('Authentication required'); }
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || 'Request failed');
   return body;

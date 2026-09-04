@@ -4,9 +4,10 @@
 ## アーキテクチャ
 
 - Hub VNet (10.1.0.0/16): Azure Firewall（プライベート IP: 10.1.1.4）を AzureFirewallSubnet に配置
-- Spoke1 VNet (10.2.0.0/16): Container Apps Environment（内部）、Private Endpoint（ACR, SQL）
+- Spoke1 VNet (10.2.0.0/16): Demo App用Container Apps Environment、Private Endpoint（ACR, SQL）。許可IPv4未指定時は内部Environment、指定時は外部Environment
 - Spoke2 VNet (10.3.0.0/16): テスト用 VM
-- Control VNet (10.4.0.0/16): Control AppとAzure Table StorageのPrivate Endpointを配置。Control ACRはパブリックエンドポイントをManaged Identityで利用する。Hub/Spokeとはピアリングせず、Demo側FirewallとUDRを使用しない
+- Hub VNetのControl専用サブネット: Control App用ACA Environmentを`10.1.4.0/23`、Azure Table StorageのPrivate Endpointを`10.1.6.0/24`へ配置。Firewall向けUDRは関連付けない。許可IPv4未指定時は内部Environment、指定時は外部Environment。Control ACRはパブリックエンドポイントをManaged Identityで利用する
+- 外部Environment時のDemo AppとControl App: 同じ指定パブリックIPv4の`/32`だけをIngressで許可
 - Hub-Spoke ピアリング
 - Demo PlaneのHub-Spoke間通信はAzure Firewall経由（UDRで強制）
 

@@ -2,15 +2,13 @@
 
 ## 概要
 
-1つの基盤リソースグループ内に、業務アプリケーションを配置するDemo Planeと運用画面を配置するControl Planeを分離して構築するAzure環境。Demo PlaneはHub-Spokeネットワーク、Node.js Demo App、Azure SQL Database、VM、Azure Firewallで構成する。Control Planeは独立したVNet、Container Apps Environment、ACR、Managed Identityを使用し、Demo側のFirewallとUDRに依存しない。SRE Agent用リソースグループは別に作成し、デプロイ直後は空とする。
+1つの基盤リソースグループ内に、業務アプリケーションを配置するDemo Planeと運用画面を配置するControl Planeを分離して構築するAzure環境。ネットワークはHub、Spoke1、Spoke2の3 VNetで構成する。Control PlaneはHub VNet内のUDRなし専用サブネットを使用し、Container Apps Environment、ACR、Managed IdentityをDemo側から分離する。SRE Agent用リソースグループは別に作成し、デプロイ直後は空とする。
 
 ---
 
 ## ネットワークトポロジ
 
 ```
-  GitHub Repo ──► GitHub Actions ──► ACR ──► Container Apps (Spoke1)
-
 ┌───────────────────┐
 │    Hub VNet          │
 │   10.1.0.0/16       │
@@ -21,6 +19,13 @@
 │  ┌─────────────┐  │
 │  │  Azure FW   │  │
 │  └──────┬──────┘  │
+│  ┌─────────────────┐  │
+│  │ Control ACA     │  │
+│  │ UDRなしサブネット │  │
+│  └─────────────────┘  │
+│  ┌─────────────────┐  │
+│  │ Table Private EP│  │
+│  └─────────────────┘  │
 └─────────┼─────────┘
            │
 ┌───────────┴───────────┐
@@ -46,7 +51,7 @@
 └───────────────────────┘
 ```
 
-**通信フロー:** Demo PlaneのHub-Spoke間通信はAzure Firewallを経由する。Control VNetはHub-Spokeとピアリングせず、Demo側のFirewallとUDRを使用しない。
+**通信フロー:** Demo PlaneのHub-Spoke間通信はAzure Firewallを経由する。Control AppはHub VNet内の専用サブネットへ配置し、そのサブネットにはFirewall向けUDRを関連付けない。単一の許可IPv4を指定した場合はDemo AppとControl Appを外部Environmentで構築し、両AppのIngressでその`/32`だけを許可する。未指定時は両Environmentを内部化し、Bastion接続先のHub VMから操作する。
 
 ---
 
@@ -54,10 +59,9 @@
 
 | VNet | アドレス空間 | 主なサブネット |
 |------|-------------|----------------|
-| Hub | 10.1.0.0/16 | AzureFirewallSubnet: 10.1.1.0/26、sn-default: 10.1.2.0/24、AzureFirewallManagementSubnet: 10.1.3.0/26 |
+| Hub | 10.1.0.0/16 | AzureFirewallSubnet: 10.1.1.0/26、sn-default: 10.1.2.0/24、AzureFirewallManagementSubnet: 10.1.3.0/26、sn-control-container-apps: 10.1.4.0/23、sn-control-private-endpoints: 10.1.6.0/24 |
 | Spoke1 | 10.2.0.0/16 | sn-container-apps: 10.2.0.0/23、sn-private-endpoints: 10.2.2.0/24 |
 | Spoke2 | 10.3.0.0/16 | sn-default: 10.3.1.0/24 |
-| Control | 10.4.0.0/16 | snet-aca-infrastructure: 10.4.0.0/23、snet-private-endpoints: 10.4.2.0/24 |
 
 > **Note:** Container Apps Environment には最低 /23 のサブネットが必要
 
@@ -69,7 +73,7 @@
 
 | リソース | 名前 | 説明 |
 |---------|------|------|
-| VNet × 4 | `{prefix}-vnet-hub`, `spoke1`, `spoke2`, `{prefix}-control-vnet` | Demo側3 VNetと独立Control VNet |
+| VNet × 3 | `{prefix}-vnet-hub`, `spoke1`, `spoke2` | Control AppはHub内の専用サブネットに配置 |
 | NSG (VM 用) | `{prefix}-nsg-default` | VM サブネット共通。RDP (10.0.0.0/8 → 3389) と ICMP を許可 |
 | NSG (PE 用) | `{prefix}-nsg-private-endpoints` | Spoke1 sn-private-endpoints 用。HTTPS (443) と SQL (1433) のみ内部から許可、他全拒否 |
 | Azure Firewall | `{prefix}-afw` | Hub VNet に配置。Basic SKU |
@@ -81,7 +85,7 @@
 | Azure Bastion × 2 | `{prefix}-bastion-hub`, `bastion-spoke2` | Developer SKU（無料）。同一 VNet 内の VM のみ接続可能 |
 | Private DNS Zone | `privatelink.azurecr.io` | ACR Private Endpoint 用。Hub VNet にリンク |
 | Private DNS Zone | `privatelink.database.windows.net` | Azure SQL Private Endpoint 用。Hub VNet にリンク |
-| Private DNS Zone | `privatelink.table.core.windows.net` | Azure Table Storage Private Endpoint用。DemoとControlの各VNetにリンク |
+| Private DNS Zone | `privatelink.table.core.windows.net` | Azure Table Storage Private Endpoint用。HubとSpokeへリンク |
 
 ### Demoアプリケーション (Spoke1)
 
@@ -97,8 +101,8 @@
 
 | リソース | 説明 |
 |---------|------|
-| Control App | 常時外部公開し、Microsoft Entra IDの組み込み認証で保護。Dashboardと運用操作を提供 |
-| Control Container Apps Environment | Control VNet内の外部Environment。Demo Environmentとは分離 |
+| Control App | 指定IPv4の`/32`からだけ外部アクセス可能。IP未指定時は内部アクセスのみ。Dashboardと運用操作を提供 |
+| Control Container Apps Environment | Hub VNet内のUDRなし専用サブネットに配置。指定IPv4の有無に応じて外部／内部Environmentを選択し、Demo Environmentとは分離 |
 | Control ACR / Managed Identity | Demo側とは別リソース。Managed Identityでイメージを取得 |
 | Azure Table Storage | 操作イベント、運用状態、監査ログを保持。Shared Keyは使用せず、Table単位RBACでアクセス |
 | Table Private Endpoint / Private DNS | Demo AppとControl Appからのアクセスに使用 |
@@ -232,4 +236,4 @@ Perf
 
 - **ヘルスプローブの除外:** Container Apps のヘルスプローブ (`/health`, `/ready`) は Application Insights テレメトリから除外されています（`server.js` の TelemetryProcessor）。これによりプローブのリクエストがメトリクス平均を希釈することを防止しています。
 - **Demo Appアクセス:** 既定はVNet内のVMへBastion接続してアクセスする。単一の許可IPv4を指定して公開した環境では、その送信元からだけ直接アクセスできる。
-- **Control Appアクセス:** 外部URLへアクセスし、Microsoft Entra IDで認証する。
+- **Control Appアクセス:** 指定IPv4から外部URLへアクセスする。IP未指定時はBastionでVMへ接続し、VM内のブラウザから内部URLへアクセスする。

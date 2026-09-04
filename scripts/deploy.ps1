@@ -1,14 +1,13 @@
 <#
 .SYNOPSIS
-  Control/Demo インフラと空の参加者用 SRE Agent RG をデプロイ
+    Control/Demo インフラと空の SRE Agent RG をデプロイ
 
-.PARAMETER ControlEntraClientId
-  Control App の Entra クライアント ID。既定値は SRE_CONTROL_ENTRA_CLIENT_ID
-.PARAMETER DemoAllowedSourceIp
-    Demo App へのインターネットアクセスを許可する単一のパブリック IPv4 アドレス。
-    省略時は内部 ACA のままとし、VNet 内からのみアクセス可能。
-.PARAMETER EnableOidc
-  Demo ACR/App 用 GitHub Actions OIDC 設定を有効化
+.PARAMETER AllowedSourceIp
+        Demo App と Control App へのインターネットアクセスを許可する単一のパブリック IPv4 アドレス。
+        省略時は両方を内部 ACA とし、Bastion 経由の VM からのみアクセス可能。
+
+.PARAMETER MigrateLegacyControlNetwork
+    旧Control VNet構成を削除し、Hub VNet内の専用サブネット構成へ移行する。
 #>
 param(
     [string]$ResourceGroup = "rg-sre-demo",
@@ -16,11 +15,9 @@ param(
     [string]$SreAgentResourceGroup = "rg-sre-agent",
     [string]$SreAgentLocation = "eastus2",
     [string]$ControlPrefix = "srectrl",
-    [string]$ControlEntraClientId = [Environment]::GetEnvironmentVariable("SRE_CONTROL_ENTRA_CLIENT_ID"),
-    [string]$DemoAllowedSourceIp = "",
-    [hashtable]$Tags = @{},
-    [string]$GitHubRepo = "",
-    [switch]$EnableOidc
+    [string]$AllowedSourceIp = "",
+    [switch]$MigrateLegacyControlNetwork,
+    [hashtable]$Tags = @{}
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,14 +31,8 @@ function Invoke-AzCommand {
     return $output
 }
 
-function Invoke-GhCommand {
-    param([string[]]$Arguments, [string]$FailureMessage)
-    & gh @Arguments
-    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
-}
-
-function Assert-DemoEnvironmentMode {
-    param([string]$ResourceGroupName, [string]$EnvironmentName, [string]$AllowedSourceIp)
+function Assert-EnvironmentMode {
+    param([string]$ResourceGroupName, [string]$EnvironmentName, [string]$AllowedIp, [switch]$AllowRecreation)
 
     $resourceGroupExists = Invoke-AzCommand @("group", "exists", "--name", $ResourceGroupName, "-o", "tsv") `
         "インフラ RG '$ResourceGroupName' の存在確認に失敗しました。"
@@ -50,13 +41,91 @@ function Assert-DemoEnvironmentMode {
     $existingEnvironmentInternal = Invoke-AzCommand @(
         "containerapp", "env", "list", "--resource-group", $ResourceGroupName,
         "--query", "[?name=='$EnvironmentName'].properties.vnetConfiguration.internal | [0]", "-o", "tsv"
-    ) "Demo Container Apps Environment の状態を取得できませんでした。"
+    ) "Container Apps Environment '$EnvironmentName' の状態を取得できませんでした。"
     if ([string]::IsNullOrWhiteSpace($existingEnvironmentInternal)) { return }
 
-    $requestedEnvironmentInternal = [string]::IsNullOrWhiteSpace($AllowedSourceIp)
+    $requestedEnvironmentInternal = [string]::IsNullOrWhiteSpace($AllowedIp)
     $currentEnvironmentInternal = [System.Convert]::ToBoolean($existingEnvironmentInternal)
-    if ($currentEnvironmentInternal -ne $requestedEnvironmentInternal) {
-        throw "既存の Demo Container Apps Environment '$EnvironmentName' は内部/公開モードを変更できません。README の手順で Demo App と Environment を再作成してから再実行してください。"
+    if ($currentEnvironmentInternal -ne $requestedEnvironmentInternal -and -not $AllowRecreation) {
+        throw "既存の Container Apps Environment '$EnvironmentName' は内部/公開モードを変更できません。README の手順で対象の App と Environment を再作成してから再実行してください。"
+    }
+}
+
+function Invoke-LegacyControlNetworkMigration {
+    param(
+        [string]$ResourceGroupName,
+        [string]$EnvironmentName,
+        [string]$ExpectedSubnetId,
+        [string]$Prefix,
+        [string]$AllowedIp
+    )
+
+    $existingEnvironmentSubnetId = Invoke-AzCommand @(
+        "containerapp", "env", "list", "--resource-group", $ResourceGroupName,
+        "--query", "[?name=='$EnvironmentName'].properties.vnetConfiguration.infrastructureSubnetId | [0]", "-o", "tsv"
+    ) "Container Apps Environment '$EnvironmentName' のサブネットを取得できませんでした。"
+    $legacyVnetName = "$Prefix-vnet"
+    $legacyVnetExists = Invoke-AzCommand @(
+        "network", "vnet", "list", "--resource-group", $ResourceGroupName,
+        "--query", "[?name=='$legacyVnetName'].name | [0]", "-o", "tsv"
+    ) "旧 Control VNet '$legacyVnetName' の存在確認に失敗しました。"
+
+    $existingEnvironmentInternal = Invoke-AzCommand @(
+        "containerapp", "env", "list", "--resource-group", $ResourceGroupName,
+        "--query", "[?name=='$EnvironmentName'].properties.vnetConfiguration.internal | [0]", "-o", "tsv"
+    ) "Container Apps Environment '$EnvironmentName' の状態を取得できませんでした。"
+    $environmentNeedsRecreation = -not [string]::IsNullOrWhiteSpace($existingEnvironmentSubnetId) -and
+        $existingEnvironmentSubnetId -ne $ExpectedSubnetId
+    if (-not [string]::IsNullOrWhiteSpace($existingEnvironmentInternal)) {
+        $requestedEnvironmentInternal = [string]::IsNullOrWhiteSpace($AllowedIp)
+        $environmentNeedsRecreation = $environmentNeedsRecreation -or
+            ([System.Convert]::ToBoolean($existingEnvironmentInternal) -ne $requestedEnvironmentInternal)
+    }
+    if (-not $environmentNeedsRecreation -and [string]::IsNullOrWhiteSpace($legacyVnetExists)) { return }
+    if (-not $MigrateLegacyControlNetwork) {
+        throw "旧 Control VNet 構成を検出しました。内容を確認し、-MigrateLegacyControlNetwork を指定して再実行してください。"
+    }
+
+    Write-Host "  旧 Control VNet 構成を削除して Hub VNet 構成へ移行..." -ForegroundColor Yellow
+    if ($environmentNeedsRecreation) {
+        $controlAppName = "$Prefix-app"
+        $controlAppExists = Invoke-AzCommand @(
+            "containerapp", "list", "--resource-group", $ResourceGroupName,
+            "--query", "[?name=='$controlAppName'].name | [0]", "-o", "tsv"
+        ) "Control App '$controlAppName' の存在確認に失敗しました。"
+        if (-not [string]::IsNullOrWhiteSpace($controlAppExists)) {
+            Invoke-AzCommand @("containerapp", "delete", "--name", $controlAppName, "--resource-group", $ResourceGroupName, "--yes") `
+                "旧 Control App '$controlAppName' の削除に失敗しました。" | Out-Null
+        }
+        Invoke-AzCommand @("containerapp", "env", "delete", "--name", $EnvironmentName, "--resource-group", $ResourceGroupName, "--yes") `
+            "旧 Container Apps Environment '$EnvironmentName' の削除に失敗しました。" | Out-Null
+    }
+
+    $legacyPrivateEndpointName = "$Prefix-table-pe"
+    $legacyPrivateEndpointExists = Invoke-AzCommand @(
+        "network", "private-endpoint", "list", "--resource-group", $ResourceGroupName,
+        "--query", "[?name=='$legacyPrivateEndpointName'].name | [0]", "-o", "tsv"
+    ) "旧 Table Private Endpoint '$legacyPrivateEndpointName' の存在確認に失敗しました。"
+    if (-not [string]::IsNullOrWhiteSpace($legacyPrivateEndpointExists)) {
+        Invoke-AzCommand @("network", "private-endpoint", "delete", "--name", $legacyPrivateEndpointName, "--resource-group", $ResourceGroupName) `
+            "旧 Table Private Endpoint '$legacyPrivateEndpointName' の削除に失敗しました。" | Out-Null
+    }
+
+    $tablePrivateDnsZoneName = 'privatelink.table.core.windows.net'
+    $legacyDnsLinkName = "$Prefix-table-link"
+    $legacyDnsLinkExists = Invoke-AzCommand @(
+        "network", "private-dns", "link", "vnet", "list", "--resource-group", $ResourceGroupName,
+        "--zone-name", $tablePrivateDnsZoneName, "--query", "[?name=='$legacyDnsLinkName'].name | [0]", "-o", "tsv"
+    ) "旧 Table Private DNS link '$legacyDnsLinkName' の存在確認に失敗しました。"
+    if (-not [string]::IsNullOrWhiteSpace($legacyDnsLinkExists)) {
+        Invoke-AzCommand @(
+            "network", "private-dns", "link", "vnet", "delete", "--resource-group", $ResourceGroupName,
+            "--zone-name", $tablePrivateDnsZoneName, "--name", $legacyDnsLinkName, "--yes"
+        ) "旧 Table Private DNS link '$legacyDnsLinkName' の削除に失敗しました。" | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($legacyVnetExists)) {
+        Invoke-AzCommand @("network", "vnet", "delete", "--name", $legacyVnetName, "--resource-group", $ResourceGroupName) `
+            "旧 Control VNet '$legacyVnetName' の削除に失敗しました。" | Out-Null
     }
 }
 
@@ -74,22 +143,21 @@ if ([string]::IsNullOrWhiteSpace($env:SRE_SQL_FAULT_RUNNER_PASSWORD)) {
     [System.Security.Cryptography.RandomNumberGenerator]::Fill($passwordBytes)
     $env:SRE_SQL_FAULT_RUNNER_PASSWORD = [Convert]::ToBase64String($passwordBytes)
 }
-if ([string]::IsNullOrWhiteSpace($ControlEntraClientId)) {
-    throw "環境変数 SRE_CONTROL_ENTRA_CLIENT_ID または -ControlEntraClientId を指定してください。"
-}
 if ($ControlPrefix -notmatch '^[a-z0-9]{2,10}$') {
     throw "-ControlPrefix は小文字英数字 2～10 文字で指定してください。"
 }
 if ($ResourceGroup -eq $SreAgentResourceGroup) {
     throw "-ResourceGroup と -SreAgentResourceGroup には異なる名前を指定してください。"
 }
-$DemoAllowedSourceIp = $DemoAllowedSourceIp.Trim()
-if (-not [string]::IsNullOrWhiteSpace($DemoAllowedSourceIp) -and -not (Test-PublicIPv4Address $DemoAllowedSourceIp)) {
-    throw "-DemoAllowedSourceIp には CIDR を付けず、単一のパブリック IPv4 アドレスを指定してください。"
+$AllowedSourceIp = $AllowedSourceIp.Trim()
+if (-not [string]::IsNullOrWhiteSpace($AllowedSourceIp) -and -not (Test-PublicIPv4Address $AllowedSourceIp)) {
+    throw "-AllowedSourceIp には CIDR を付けず、単一のパブリック IPv4 アドレスを指定してください。"
 }
 
 $demoEnvironmentName = 'sre-demo-cae'
-Assert-DemoEnvironmentMode $ResourceGroup $demoEnvironmentName $DemoAllowedSourceIp
+$controlEnvironmentName = "$ControlPrefix-cae"
+Assert-EnvironmentMode $ResourceGroup $demoEnvironmentName $AllowedSourceIp
+Assert-EnvironmentMode $ResourceGroup $controlEnvironmentName $AllowedSourceIp -AllowRecreation:$MigrateLegacyControlNetwork
 
 # --- 1. リソースグループ作成 ---
 Write-Host "`n[1/8] リソースグループを作成..." -ForegroundColor Yellow
@@ -103,13 +171,8 @@ Invoke-AzCommand (@("group", "create", "--name", $SreAgentResourceGroup, "--loca
     "空の Agent RG '$SreAgentResourceGroup' の作成に失敗しました。" | Out-Null
 Write-Host "  インフラ RG: $ResourceGroup ($Location)" -ForegroundColor Green
 Write-Host "  空の Agent RG: $SreAgentResourceGroup ($SreAgentLocation)" -ForegroundColor Green
-Assert-DemoEnvironmentMode $ResourceGroup $demoEnvironmentName $DemoAllowedSourceIp
-
-$account = Invoke-AzCommand @("account", "show", "-o", "json") `
-    "Azure アカウント情報を取得できませんでした。az login を確認してください。" | ConvertFrom-Json
-$subscriptionId = $account.id
-$tenantId = $account.tenantId
-$entraIssuer = "https://login.microsoftonline.com/$tenantId/v2.0"
+Assert-EnvironmentMode $ResourceGroup $demoEnvironmentName $AllowedSourceIp
+Assert-EnvironmentMode $ResourceGroup $controlEnvironmentName $AllowedSourceIp -AllowRecreation:$MigrateLegacyControlNetwork
 
 # --- 2. Demo 用 Log Analytics を先行作成 ---
 $lawName = "sre-demo-law"
@@ -140,36 +203,27 @@ for ($retry = 1; $retry -le 12; $retry++) {
     Start-Sleep -Seconds 10
 }
 
-# --- 3. Control インフラを先にデプロイ ---
+# --- 3. Fault 状態 Storage を先にデプロイ ---
 $faultEnvironmentId = "$($ResourceGroup.ToLowerInvariant())/$ControlPrefix"
-Write-Host "`n[3/8] Control インフラをインフラ RG にデプロイ..." -ForegroundColor Yellow
-$controlResult = Invoke-AzCommand @(
-    "deployment", "group", "create", "--name", "control-infrastructure",
-    "--resource-group", $ResourceGroup, "--template-file", "infra/control-main.bicep",
-    "--parameters", "location=$Location", "prefix=$ControlPrefix", "targetPort=8080",
-    "entraClientId=$ControlEntraClientId", "entraIssuer=$entraIssuer",
-    "faultEnvironmentId=$faultEnvironmentId", "--query", "properties.outputs", "-o", "json"
-) "Control インフラの Bicep デプロイに失敗しました。" | ConvertFrom-Json
+Write-Host "`n[3/8] Fault 状態 Storage をインフラ RG にデプロイ..." -ForegroundColor Yellow
+$stateResult = Invoke-AzCommand @(
+    "deployment", "group", "create", "--name", "control-state",
+    "--resource-group", $ResourceGroup, "--template-file", "infra/modules/faultState.bicep",
+    "--parameters", "location=$Location", "namePrefix=$ControlPrefix",
+    "--query", "properties.outputs", "-o", "json"
+) "Fault 状態 Storage の Bicep デプロイに失敗しました。" | ConvertFrom-Json
 
-$faultStorageAccountName = ($controlResult.storageAccountId.value -split '/')[-1]
-$controlAcrLoginServer = $controlResult.registryLoginServer.value
-$controlAcrName = $controlAcrLoginServer -replace '\.azurecr\.io$', ''
-$controlAppFqdn = $controlResult.containerAppFqdn.value
-$controlAppName = "$ControlPrefix-app"
-if ([string]::IsNullOrWhiteSpace($faultStorageAccountName) -or
-    [string]::IsNullOrWhiteSpace($controlAcrLoginServer) -or
-    [string]::IsNullOrWhiteSpace($controlAppFqdn)) {
-    throw "Control インフラの必須出力を取得できませんでした。"
+$faultStorageAccountName = $stateResult.storageAccountName.value
+if ([string]::IsNullOrWhiteSpace($faultStorageAccountName)) {
+    throw "Fault 状態 Storage の必須出力を取得できませんでした。"
 }
 Write-Host "  Control Storage: $faultStorageAccountName" -ForegroundColor Green
-Write-Host "  Control ACR: $controlAcrLoginServer" -ForegroundColor Green
-Write-Host "  Control App: $controlAppFqdn" -ForegroundColor Green
 
-# --- 4. Control 出力を接続して Demo インフラをデプロイ ---
+# --- 4. Storage を接続して Demo インフラをデプロイ ---
 $env:SRE_CONTROL_RESOURCE_GROUP = $ResourceGroup
 $env:SRE_FAULT_STORAGE_ACCOUNT = $faultStorageAccountName
 $env:SRE_FAULT_ENVIRONMENT_ID = $faultEnvironmentId
-$env:SRE_DEMO_ALLOWED_SOURCE_IP = $DemoAllowedSourceIp
+$env:SRE_ALLOWED_SOURCE_IP = $AllowedSourceIp
 Write-Host "`n[4/8] Demo インフラを同じインフラ RG にデプロイ（約 20～30 分）..." -ForegroundColor Yellow
 $demoResult = Invoke-AzCommand @(
     "deployment", "group", "create", "--name", "demo-infrastructure",
@@ -181,17 +235,45 @@ $demoAcrLoginServer = $demoResult.acrLoginServer.value
 $demoAcrName = $demoAcrLoginServer -replace '\.azurecr\.io$', ''
 $demoAppFqdn = $demoResult.containerAppFqdn.value
 $demoAppName = "sre-demo-app"
-if ([string]::IsNullOrWhiteSpace($demoAcrLoginServer) -or [string]::IsNullOrWhiteSpace($demoAppFqdn)) {
+$hubVnetId = $demoResult.hubVirtualNetworkId.value
+$controlInfrastructureSubnetId = $demoResult.controlInfrastructureSubnetId.value
+if ([string]::IsNullOrWhiteSpace($demoAcrLoginServer) -or
+    [string]::IsNullOrWhiteSpace($demoAppFqdn) -or
+    [string]::IsNullOrWhiteSpace($hubVnetId) -or
+    [string]::IsNullOrWhiteSpace($controlInfrastructureSubnetId)) {
     throw "Demo インフラの必須出力を取得できませんでした。"
 }
+Invoke-LegacyControlNetworkMigration $ResourceGroup $controlEnvironmentName $controlInfrastructureSubnetId $ControlPrefix $AllowedSourceIp
 
-# --- 5. 各 ACR で各アプリをビルド ---
+# --- 5. Hub VNet の専用サブネットへ Control インフラをデプロイ ---
+Write-Host "`n[5/8] Control インフラをHub VNetにデプロイ..." -ForegroundColor Yellow
+$controlResult = Invoke-AzCommand @(
+    "deployment", "group", "create", "--name", "control-infrastructure",
+    "--resource-group", $ResourceGroup, "--template-file", "infra/control-main.bicep",
+    "--parameters", "location=$Location", "prefix=$ControlPrefix", "targetPort=8080",
+    "allowedSourceIpAddress=$AllowedSourceIp", "faultEnvironmentId=$faultEnvironmentId",
+    "storageAccountName=$faultStorageAccountName", "virtualNetworkId=$hubVnetId",
+    "infrastructureSubnetId=$controlInfrastructureSubnetId",
+    "--query", "properties.outputs", "-o", "json"
+) "Control インフラの Bicep デプロイに失敗しました。" | ConvertFrom-Json
+
+$controlAcrLoginServer = $controlResult.registryLoginServer.value
+$controlAcrName = $controlAcrLoginServer -replace '\.azurecr\.io$', ''
+$controlAppFqdn = $controlResult.containerAppFqdn.value
+$controlAppName = "$ControlPrefix-app"
+if ([string]::IsNullOrWhiteSpace($controlAcrLoginServer) -or [string]::IsNullOrWhiteSpace($controlAppFqdn)) {
+    throw "Control インフラの必須出力を取得できませんでした。"
+}
+Write-Host "  Control ACR: $controlAcrLoginServer" -ForegroundColor Green
+Write-Host "  Control App: $controlAppFqdn" -ForegroundColor Green
+
+# --- 6. 各 ACR で各アプリをビルド ---
 $commitTag = (& git rev-parse --short HEAD 2>$null)
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitTag)) {
     throw "Git コミットハッシュを取得できませんでした。Git リポジトリの状態を確認してください。"
 }
 $imageTag = "$commitTag-$(Get-Date -Format 'yyyyMMddHHmmss')"
-Write-Host "`n[5/8] Control/Demo/Fault Runner イメージをビルド: $imageTag" -ForegroundColor Yellow
+Write-Host "`n[6/8] Control/Demo/Fault Runner イメージをビルド: $imageTag" -ForegroundColor Yellow
 Invoke-AzCommand @("acr", "build", "--registry", $controlAcrName, "--image", "sre-control-app:$imageTag", "./control-app") `
     "Control App の ACR ビルドに失敗しました。" | Out-Null
 Invoke-AzCommand @("acr", "build", "--registry", $demoAcrName, "--image", "sre-demo-app:$imageTag", "./app") `
@@ -199,8 +281,8 @@ Invoke-AzCommand @("acr", "build", "--registry", $demoAcrName, "--image", "sre-d
 Invoke-AzCommand @("acr", "build", "--registry", $demoAcrName, "--image", "sre-fault-runner:$imageTag", "./fault-runner") `
     "Fault Runner の ACR ビルドに失敗しました。" | Out-Null
 
-# --- 6. Container App と Job を更新 ---
-Write-Host "`n[6/8] Control/Demo/Fault Runner のイメージを更新..." -ForegroundColor Yellow
+# --- 7. Container App と Job を更新 ---
+Write-Host "`n[7/8] Control/Demo/Fault Runner のイメージを更新..." -ForegroundColor Yellow
 Invoke-AzCommand @(
     "containerapp", "update", "--name", $controlAppName, "--resource-group", $ResourceGroup,
     "--image", "$controlAcrLoginServer/sre-control-app:$imageTag", "-o", "none"
@@ -218,106 +300,6 @@ Invoke-AzCommand @(
     "--image", "$demoAcrLoginServer/sre-fault-runner:$imageTag", "-o", "none"
 ) "Fault Reconciler Job の更新に失敗しました。" | Out-Null
 
-# --- 7. GitHub Actions OIDC（Demo の ACR/App のみ） ---
-if (-not $EnableOidc) {
-    Write-Host "`n[7/8] GitHub Actions OIDC 設定...スキップ（有効化は -EnableOidc）" -ForegroundColor DarkGray
-} else {
-    Write-Host "`n[7/8] GitHub Actions OIDC 設定（Demo の ACR/App のみ）..." -ForegroundColor Yellow
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        Write-Warning "gh CLI が見つからないため OIDC 設定をスキップします。"
-    } else {
-        if (-not $GitHubRepo) {
-            $gitRemoteUrl = git remote get-url origin 2>$null
-            if ($LASTEXITCODE -eq 0 -and $gitRemoteUrl -match 'github\.com[:/](.+?)(?:\.git)?$') { $GitHubRepo = $Matches[1] }
-        }
-        if (-not $GitHubRepo) {
-            Write-Warning "GitHub リポジトリを検出できないため OIDC 設定をスキップします。"
-        } else {
-            $appDisplayName = "sre-demo-github-actions"
-            $credentialName = "github-actions-main"
-            $existingApp = Invoke-AzCommand @(
-                "ad", "app", "list", "--display-name", $appDisplayName, "--query", "[0]", "-o", "json"
-            ) "OIDC 用 Entra アプリを確認できませんでした。" | ConvertFrom-Json
-            if ($existingApp) {
-                $appClientId = $existingApp.appId
-                $appObjectId = $existingApp.id
-            } else {
-                $newApp = Invoke-AzCommand @("ad", "app", "create", "--display-name", $appDisplayName, "-o", "json") `
-                    "OIDC 用 Entra アプリの作成に失敗しました。" | ConvertFrom-Json
-                $appClientId = $newApp.appId
-                $appObjectId = $newApp.id
-            }
-
-            $servicePrincipalId = Invoke-AzCommand @(
-                "ad", "sp", "list", "--filter", "appId eq '$appClientId'", "--query", "[0].id", "-o", "tsv"
-            ) "OIDC 用 Service Principal を確認できませんでした。"
-            if ([string]::IsNullOrWhiteSpace($servicePrincipalId)) {
-                Invoke-AzCommand @("ad", "sp", "create", "--id", $appClientId, "-o", "none") `
-                    "OIDC 用 Service Principal の作成に失敗しました。" | Out-Null
-                $servicePrincipalId = Invoke-AzCommand @(
-                    "ad", "sp", "list", "--filter", "appId eq '$appClientId'", "--query", "[0].id", "-o", "tsv"
-                ) "作成した Service Principal を取得できませんでした。"
-            }
-
-            $credential = @{
-                name = $credentialName
-                issuer = "https://token.actions.githubusercontent.com"
-                subject = "repo:${GitHubRepo}:ref:refs/heads/main"
-                description = "GitHub Actions - main branch only"
-                audiences = @("api://AzureADTokenExchange")
-            }
-            $existingCredential = Invoke-AzCommand @(
-                "ad", "app", "federated-credential", "list", "--id", $appObjectId,
-                "--query", "[?name=='$credentialName'] | [0]", "-o", "json"
-            ) "Federated Credential を確認できませんでした。" | ConvertFrom-Json
-            $credentialMatches = $existingCredential -and
-                $existingCredential.issuer -eq $credential.issuer -and
-                $existingCredential.subject -eq $credential.subject -and
-                @($existingCredential.audiences).Count -eq 1 -and
-                @($existingCredential.audiences)[0] -eq $credential.audiences[0]
-            if (-not $credentialMatches) {
-                if ($existingCredential) {
-                    Invoke-AzCommand @(
-                        "ad", "app", "federated-credential", "delete", "--id", $appObjectId,
-                        "--federated-credential-id", $existingCredential.id
-                    ) "既存 Federated Credential の削除に失敗しました。" | Out-Null
-                }
-                $tempFile = [System.IO.Path]::GetTempFileName()
-                try {
-                    $credential | ConvertTo-Json -Depth 3 | Set-Content -Path $tempFile -Encoding UTF8
-                    Invoke-AzCommand @(
-                        "ad", "app", "federated-credential", "create", "--id", $appObjectId,
-                        "--parameters", $tempFile, "-o", "none"
-                    ) "Federated Credential の作成に失敗しました。" | Out-Null
-                } finally {
-                    Remove-Item $tempFile -ErrorAction SilentlyContinue
-                }
-            }
-
-            $demoAcrResourceId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ContainerRegistry/registries/$demoAcrName"
-            $demoAppResourceId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/containerApps/$demoAppName"
-            $roleAssignments = @(
-                @{ Scope = $demoAcrResourceId; Role = "AcrPush" }
-                @{ Scope = $demoAppResourceId; Role = "Contributor" }
-            )
-            foreach ($assignment in $roleAssignments) {
-                Invoke-AzCommand @(
-                    "role", "assignment", "create", "--assignee-object-id", $servicePrincipalId,
-                    "--assignee-principal-type", "ServicePrincipal", "--role", $assignment.Role,
-                    "--scope", $assignment.Scope, "-o", "none"
-                ) "Demo リソースへの OIDC ロール割り当てに失敗しました。" | Out-Null
-            }
-            Invoke-GhCommand @("secret", "set", "AZURE_CLIENT_ID", "--body", $appClientId, "--repo", $GitHubRepo) "AZURE_CLIENT_ID の設定に失敗しました。"
-            Invoke-GhCommand @("secret", "set", "AZURE_TENANT_ID", "--body", $tenantId, "--repo", $GitHubRepo) "AZURE_TENANT_ID の設定に失敗しました。"
-            Invoke-GhCommand @("secret", "set", "AZURE_SUBSCRIPTION_ID", "--body", $subscriptionId, "--repo", $GitHubRepo) "AZURE_SUBSCRIPTION_ID の設定に失敗しました。"
-            Invoke-GhCommand @("variable", "set", "RESOURCE_GROUP", "--body", $ResourceGroup, "--repo", $GitHubRepo) "RESOURCE_GROUP の設定に失敗しました。"
-            Invoke-GhCommand @("variable", "set", "ACR_NAME", "--body", $demoAcrName, "--repo", $GitHubRepo) "ACR_NAME の設定に失敗しました。"
-            Invoke-GhCommand @("variable", "set", "CONTAINER_APP_NAME", "--body", $demoAppName, "--repo", $GitHubRepo) "CONTAINER_APP_NAME の設定に失敗しました。"
-            Write-Host "  OIDC 設定完了。対象は Demo ACR/App のみです。" -ForegroundColor Green
-        }
-    }
-}
-
 # --- 8. 完了 ---
 $appInsightsName = "sre-demo-appi"
 $appInsightsId = Invoke-AzCommand @(
@@ -329,12 +311,12 @@ $appInsightsId = Invoke-AzCommand @(
 Write-Host "`n[8/8] デプロイ完了" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Demo URL:          https://$demoAppFqdn" -ForegroundColor White
-if ([string]::IsNullOrWhiteSpace($DemoAllowedSourceIp)) {
-    Write-Host "  Demo Access:       Private (Bastion/VNet required)" -ForegroundColor White
-} else {
-    Write-Host "  Demo Access:       Public, allowed from $DemoAllowedSourceIp/32" -ForegroundColor White
-}
 Write-Host "  Control URL:       https://$controlAppFqdn" -ForegroundColor White
+if ([string]::IsNullOrWhiteSpace($AllowedSourceIp)) {
+    Write-Host "  App Access:        Private (Bastion/VM required)" -ForegroundColor White
+} else {
+    Write-Host "  App Access:        Public, allowed from $AllowedSourceIp/32" -ForegroundColor White
+}
 Write-Host "  インフラ RG:       $ResourceGroup" -ForegroundColor White
 Write-Host "  空の Agent RG:     $SreAgentResourceGroup" -ForegroundColor White
 Write-Host "  Log Analytics:     $($demoResult.logAnalyticsWorkspaceName.value)" -ForegroundColor White
@@ -348,7 +330,7 @@ Write-Host "    app-exception, app-latency, app-n-plus-one" -ForegroundColor Whi
 Write-Host "    vm-cpu-high, vm-memory-high, vm-disk-pressure" -ForegroundColor White
 Write-Host "    sql-high-load, sql-deadlock, network-deny" -ForegroundColor White
 Write-Host ""
-Write-Host "  参加者の次のステップ:" -ForegroundColor Yellow
+Write-Host "  次のステップ:" -ForegroundColor Yellow
 Write-Host "    1. https://sre.azure.com/ を開く" -ForegroundColor White
 Write-Host "    2. Agent RG '$SreAgentResourceGroup' に SRE Agent を作成する" -ForegroundColor White
 Write-Host "    3. インフラ RG '$ResourceGroup' と上記監視リソースを対象に設定する" -ForegroundColor White

@@ -51,22 +51,22 @@ param faultStorageAccountName string = ''
 @description('Fault environment identifier for this Demo deployment; leave empty to disable fault integration')
 param faultEnvironmentId string = ''
 
-@description('Single public IPv4 address allowed to access the Demo App. Leave empty to require VNet access.')
-param demoAllowedSourceIp string = ''
+@description('Single public IPv4 address allowed to access the Demo and Control Apps. Leave empty to require VNet access.')
+param allowedSourceIp string = ''
 
-var effectiveDemoAllowedSourceIp = empty(demoAllowedSourceIp) ? '1.1.1.1' : demoAllowedSourceIp
-var suppliedDemoAllowedSourceIpParts = split(effectiveDemoAllowedSourceIp, '.')
-var demoAllowedSourceIpParts = concat(suppliedDemoAllowedSourceIpParts, ['', '', '', ''])
+var effectiveAllowedSourceIp = empty(allowedSourceIp) ? '1.1.1.1' : allowedSourceIp
+var suppliedAllowedSourceIpParts = split(effectiveAllowedSourceIp, '.')
+var allowedSourceIpParts = concat(suppliedAllowedSourceIpParts, ['', '', '', ''])
 var validIpv4Octets = map(range(0, 256), octet => string(octet))
-var demoIpOctet0 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[0])
-var demoIpOctet1 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[1])
-var demoIpOctet2 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[2])
-var demoIpOctet3 = indexOf(validIpv4Octets, demoAllowedSourceIpParts[3])
-var demoAllowedSourceIpIsCanonical = '${demoIpOctet0}.${demoIpOctet1}.${demoIpOctet2}.${demoIpOctet3}' == effectiveDemoAllowedSourceIp
-var demoAllowedSourceIpHasValidOctets = demoIpOctet0 >= 0 && demoIpOctet1 >= 0 && demoIpOctet2 >= 0 && demoIpOctet3 >= 0
-var demoAllowedSourceIpIsReserved = demoIpOctet0 == 0 || demoIpOctet0 == 10 || demoIpOctet0 == 127 || (demoIpOctet0 == 100 && demoIpOctet1 >= 64 && demoIpOctet1 <= 127) || (demoIpOctet0 == 169 && demoIpOctet1 == 254) || (demoIpOctet0 == 172 && demoIpOctet1 >= 16 && demoIpOctet1 <= 31) || (demoIpOctet0 == 192 && demoIpOctet1 == 0 && (demoIpOctet2 == 0 || demoIpOctet2 == 2)) || (demoIpOctet0 == 192 && demoIpOctet1 == 88 && demoIpOctet2 == 99) || (demoIpOctet0 == 192 && demoIpOctet1 == 168) || (demoIpOctet0 == 198 && (demoIpOctet1 == 18 || demoIpOctet1 == 19)) || (demoIpOctet0 == 198 && demoIpOctet1 == 51 && demoIpOctet2 == 100) || (demoIpOctet0 == 203 && demoIpOctet1 == 0 && demoIpOctet2 == 113) || demoIpOctet0 >= 224
-var demoAllowedSourceIpIsPublic = empty(demoAllowedSourceIp) || (length(suppliedDemoAllowedSourceIpParts) == 4 && demoAllowedSourceIpIsCanonical && demoAllowedSourceIpHasValidOctets && !demoAllowedSourceIpIsReserved)
-var validatedDemoAllowedSourceIp = demoAllowedSourceIpIsPublic ? demoAllowedSourceIp : fail('demoAllowedSourceIp must be a single public IPv4 address without CIDR notation.')
+var ipOctet0 = indexOf(validIpv4Octets, allowedSourceIpParts[0])
+var ipOctet1 = indexOf(validIpv4Octets, allowedSourceIpParts[1])
+var ipOctet2 = indexOf(validIpv4Octets, allowedSourceIpParts[2])
+var ipOctet3 = indexOf(validIpv4Octets, allowedSourceIpParts[3])
+var allowedSourceIpIsCanonical = '${ipOctet0}.${ipOctet1}.${ipOctet2}.${ipOctet3}' == effectiveAllowedSourceIp
+var allowedSourceIpHasValidOctets = ipOctet0 >= 0 && ipOctet1 >= 0 && ipOctet2 >= 0 && ipOctet3 >= 0
+var allowedSourceIpIsReserved = ipOctet0 == 0 || ipOctet0 == 10 || ipOctet0 == 127 || (ipOctet0 == 100 && ipOctet1 >= 64 && ipOctet1 <= 127) || (ipOctet0 == 169 && ipOctet1 == 254) || (ipOctet0 == 172 && ipOctet1 >= 16 && ipOctet1 <= 31) || (ipOctet0 == 192 && ipOctet1 == 0 && (ipOctet2 == 0 || ipOctet2 == 2)) || (ipOctet0 == 192 && ipOctet1 == 88 && ipOctet2 == 99) || (ipOctet0 == 192 && ipOctet1 == 168) || (ipOctet0 == 198 && (ipOctet1 == 18 || ipOctet1 == 19)) || (ipOctet0 == 198 && ipOctet1 == 51 && ipOctet2 == 100) || (ipOctet0 == 203 && ipOctet1 == 0 && ipOctet2 == 113) || ipOctet0 >= 224
+var allowedSourceIpIsPublic = empty(allowedSourceIp) || (length(suppliedAllowedSourceIpParts) == 4 && allowedSourceIpIsCanonical && allowedSourceIpHasValidOctets && !allowedSourceIpIsReserved)
+var validatedAllowedSourceIp = allowedSourceIpIsPublic ? allowedSourceIp : fail('allowedSourceIp must be a single public IPv4 address without CIDR notation.')
 
 // ============================================================
 // Variables
@@ -264,7 +264,7 @@ resource nsgPrivateEndpoints 'Microsoft.Network/networkSecurityGroups@2024-01-01
 // VNets - Hub
 // ============================================================
 
-// Hub VNet: AzureFirewallSubnet + AzureFirewallManagementSubnet + default subnet
+// Hub VNet: Firewall, VM, and Control plane subnets. Control subnets intentionally have no UDR.
 module vnetHub 'modules/vnet.bicep' = {
   name: 'deploy-vnet-hub'
   params: {
@@ -275,6 +275,23 @@ module vnetHub 'modules/vnet.bicep' = {
       { name: 'AzureFirewallSubnet', addressPrefix: '10.1.1.0/26' }
       { name: 'AzureFirewallManagementSubnet', addressPrefix: '10.1.3.0/26' }
       { name: 'sn-default', addressPrefix: '10.1.2.0/24', nsgId: nsgDefault.id }
+      {
+        name: 'sn-control-container-apps'
+        addressPrefix: '10.1.4.0/23'
+        delegations: [
+          {
+            name: 'Microsoft.App.environments'
+            properties: {
+              serviceName: 'Microsoft.App/environments'
+            }
+          }
+        ]
+      }
+      {
+        name: 'sn-control-private-endpoints'
+        addressPrefix: '10.1.6.0/24'
+        privateEndpointNetworkPolicies: 'Disabled'
+      }
     ]
   }
 }
@@ -563,6 +580,18 @@ resource tablePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLi
   }
 }
 
+resource tablePrivateDnsHubLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = if (enableFaultIntegration) {
+  parent: tablePrivateDnsZone
+  name: '${prefix}-table-hub-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnetHub.outputs.id
+    }
+  }
+}
+
 resource tablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (enableFaultIntegration) {
   name: '${prefix}-fault-table-pe'
   location: location
@@ -579,7 +608,7 @@ resource tablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = 
       }
     ]
     subnet: {
-      id: vnetSpoke1.outputs.subnets[1].id
+      id: vnetHub.outputs.subnets[4].id
     }
   }
 }
@@ -623,7 +652,7 @@ module containerApps 'modules/containerApps.bicep' = {
     tableEndpoint: faultTableEndpoint
     faultEnvironmentId: faultEnvironmentId
     enableFaultInjection: enableFaultIntegration
-    allowedSourceIpAddress: validatedDemoAllowedSourceIp
+    allowedSourceIpAddress: validatedAllowedSourceIp
   }
   dependsOn: [
     acrPullRole
@@ -879,6 +908,8 @@ output sqlDatabaseName string = sqlDatabase.outputs.databaseName
 output containerAppFqdn string = containerApps.outputs.appFqdn
 output containerAppPublicAccessEnabled bool = containerApps.outputs.isPubliclyAccessible
 output containerAppStaticIp string = containerApps.outputs.staticIp
+output hubVirtualNetworkId string = vnetHub.outputs.id
+output controlInfrastructureSubnetId string = vnetHub.outputs.subnets[3].id
 output vmHubPrivateIp string = vmHub.outputs.privateIp
 output vmHubId string = vmHub.outputs.vmId
 output vmSpoke2PrivateIp string = vmSpoke2.outputs.privateIp

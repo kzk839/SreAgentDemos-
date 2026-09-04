@@ -1,50 +1,15 @@
 'use strict';
 
-const ROLE_CLAIM_TYPES = new Set(['roles', 'role', 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role']);
-const ID_CLAIM_TYPES = new Set(['oid', 'http://schemas.microsoft.com/identity/claims/objectidentifier']);
-const NAME_CLAIM_TYPES = new Set(['name', 'preferred_username', 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name']);
+const DEMO_OPERATOR = Object.freeze({ userId: 'demo-operator', name: 'Demo operator' });
 
-function parsePrincipal(encoded) {
-  if (!encoded) return null;
-  try {
-    const value = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
-    if (!value || !Array.isArray(value.claims)) return null;
-    const claims = value.claims.filter(claim => claim && typeof claim.typ === 'string');
-    const roles = claims.filter(claim => ROLE_CLAIM_TYPES.has(claim.typ)).map(claim => claim.val);
-    const findClaim = types => claims.find(claim => types.has(claim.typ))?.val;
-    return {
-      userId: findClaim(ID_CLAIM_TYPES) || value.userId || value.userDetails || 'unknown',
-      name: findClaim(NAME_CLAIM_TYPES) || value.userDetails || 'Unknown user',
-      roles: [...new Set(roles)],
-    };
-  } catch (_) {
-    return null;
-  }
-}
-
-function createAuthorization(options = {}) {
-  const disabled = options.disabled === true;
+function createAuthorization() {
 
   function authenticate(req, res, next) {
-    const principal = disabled
-      ? { userId: 'local-development', name: 'Local development', roles: ['Reader', 'Operator'] }
-      : parsePrincipal(req.get('X-MS-CLIENT-PRINCIPAL'));
-    if (!principal) return res.status(401).json({ error: 'Authentication required' });
-    req.principal = principal;
+    req.principal = DEMO_OPERATOR;
     return next();
   }
 
-  function requireRole(role) {
-    return (req, res, next) => {
-      const hasRole = req.principal.roles.includes(role)
-        || (role === 'Reader' && req.principal.roles.includes('Operator'));
-      if (!hasRole) return res.status(403).json({ error: `${role} role required` });
-      return next();
-    };
-  }
-
   function requireSameOrigin(req, res, next) {
-    if (disabled) return next();
     const origin = req.get('Origin');
     const forwardedHost = req.get('X-Forwarded-Host');
     const host = forwardedHost || req.get('Host');
@@ -57,7 +22,7 @@ function createAuthorization(options = {}) {
     return next();
   }
 
-  return { authenticate, requireRole, requireSameOrigin };
+  return { authenticate, requireSameOrigin };
 }
 
-module.exports = { createAuthorization, parsePrincipal };
+module.exports = { createAuthorization, DEMO_OPERATOR };

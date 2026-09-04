@@ -15,7 +15,6 @@ function start() {
     activityStore,
     auditStore,
     faultController,
-    authDisabled: process.env.AUTH_DISABLED === 'true',
     mutationsEnabled: process.env.ENABLE_FAULT_INJECTION === 'true',
   });
   const port = Number(process.env.PORT) || 3000;

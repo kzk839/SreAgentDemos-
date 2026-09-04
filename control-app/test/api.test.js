@@ -7,17 +7,17 @@ const { createApp } = require('../src/app');
 function fixture(options = {}) {
   const calls = [];
   const app = createApp({
-    authDisabled: options.authDisabled ?? true,
     mutationsEnabled: options.mutationsEnabled ?? true,
-    activityStore: { dashboard: async () => ({ summary: { successCount: 0, failureCount: 0, successRate: null }, series: [] }), clear: async () => calls.push('clear') },
-    auditStore: { write: async entry => calls.push(entry.action) },
-    faultController: { list: async () => [], start: async id => ({ id }), stop: async id => ({ id }), stopAll: async () => { calls.push('stopAll'); return []; } },
+    activityStore: { dashboard: async () => ({ summary: { successCount: 0, failureCount: 0, successRate: null }, series: [] }), clear: async () => calls.push({ action: 'clear' }) },
+    auditStore: { write: async entry => calls.push(entry) },
+    faultController: {
+      list: async () => [],
+      start: async (id, requestedBy) => ({ id, requestedBy }),
+      stop: async (id, requestedBy) => ({ id, requestedBy }),
+      stopAll: async requestedBy => { calls.push({ action: 'stopAll', requestedBy }); return []; },
+    },
   });
   return { app, calls };
-}
-
-function principal(roles) {
-  return Buffer.from(JSON.stringify({ claims: roles.map(val => ({ typ: 'roles', val })) })).toString('base64');
 }
 
 async function withServer(app, action) {
@@ -30,26 +30,26 @@ test('serves health and reset preserves audit while clearing activity', async ()
   const { app, calls } = fixture();
   await withServer(app, async base => {
     assert.equal((await fetch(`${base}/health`)).status, 200);
-    const response = await fetch(`${base}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const response = await fetch(`${base}/api/reset`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(response.status, 200);
   });
-  assert.deepEqual(calls, ['stopAll', 'clear', 'reset']);
+  assert.deepEqual(calls, [
+    { action: 'stopAll', requestedBy: 'demo-operator' },
+    { action: 'clear' },
+    { action: 'reset', requestedBy: 'demo-operator', result: 'requested' },
+  ]);
 });
 
-test('requires the Container Apps principal when auth is enabled', async () => {
-  const { app } = fixture({ authDisabled: false });
-  await withServer(app, async base => assert.equal((await fetch(`${base}/api/faults`)).status, 401));
-});
-
-test('enforces Reader and Operator roles and same-origin mutations', async () => {
-  const { app } = fixture({ authDisabled: false });
+test('allows reads and enforces same-origin mutations', async () => {
+  const { app } = fixture();
   await withServer(app, async base => {
-    const reader = { 'X-MS-CLIENT-PRINCIPAL': principal(['Reader']) };
-    assert.equal((await fetch(`${base}/api/faults`, { headers: reader })).status, 200);
-    assert.equal((await fetch(`${base}/api/faults/app-exception/start`, { method: 'POST', headers: { ...reader, Origin: base, 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
-    const operator = { 'X-MS-CLIENT-PRINCIPAL': principal(['Operator']), Origin: base, 'Content-Type': 'application/json' };
-    assert.equal((await fetch(`${base}/api/faults/app-exception/start`, { method: 'POST', headers: operator, body: JSON.stringify({ command: 'whoami' }) })).status, 400);
-    assert.equal((await fetch(`${base}/api/faults/app-exception/start`, { method: 'POST', headers: { ...operator, Origin: 'https://example.invalid' }, body: '{}' })).status, 403);
+    assert.equal((await fetch(`${base}/api/faults`)).status, 200);
+    const sameOrigin = { Origin: base, 'Content-Type': 'application/json' };
+    const started = await fetch(`${base}/api/faults/app-exception/start`, { method: 'POST', headers: sameOrigin, body: '{}' });
+    assert.equal(started.status, 200);
+    assert.equal((await started.json()).requestedBy, 'demo-operator');
+    assert.equal((await fetch(`${base}/api/faults/app-exception/start`, { method: 'POST', headers: sameOrigin, body: JSON.stringify({ command: 'whoami' }) })).status, 400);
+    assert.equal((await fetch(`${base}/api/faults/app-exception/start`, { method: 'POST', headers: { ...sameOrigin, Origin: 'https://example.invalid' }, body: '{}' })).status, 403);
   });
 });
 

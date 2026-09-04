@@ -1,6 +1,6 @@
 # Azure SRE Agent Demo
 
-Azure SRE Agent の作成、監視接続、障害検知、調査、復旧を体験するハンズオン環境です。主催者がアプリ基盤と空の Agent 用リソースグループを構築し、参加者が [Azure SRE Agent](https://sre.azure.com/) を作成して演習します。
+Azure SRE Agentの作成、監視接続、障害検知、調査、復旧を体験するデモ環境です。このREADMEの手順に沿って、アプリ基盤の構築、[Azure SRE Agent](https://sre.azure.com/)の作成、動作確認、クリーンアップまで実施します。
 
 > [!WARNING]
 > Fault は明示的に停止、緊急停止、またはリセットするまで継続します。本番環境では使用しないでください。
@@ -12,75 +12,81 @@ Azure SRE Agent の作成、監視接続、障害検知、調査、復旧を体�
 | 範囲 | 状況 |
 |---|---|
 | Demo AppのCRUD、バックグラウンドREAD/WRITEワークロード、操作イベント記録 | 実装済み |
-| Control Appの集計グラフ、認証・認可、監査、Fault状態管理 | 実装済み |
+| Control Appの集計グラフ、同一オリジン保護、監査、Fault状態管理 | 実装済み |
 | アプリFault: 例外、遅延、N+1 | 実装済み |
 | VM Fault: CPU、メモリ、F:ディスク | Runner実装済み、Azure実デプロイ未検証 |
 | SQL Fault: 高負荷、デッドロック | Runner実装済み、Azure実デプロイ未検証 |
 | Network Deny | 専用Firewall RCGとRunner実装済み、Azure実デプロイ未検証 |
 | Reconciler | 1分周期Jobを実装済み、Azure実デプロイ未検証 |
 | 同一基盤RG内のDemo/Control分離と空のAgent RG | Bicepとスクリプト実装済み、Azure実デプロイ未検証 |
-| 指定パブリックIPv4だけに許可するDemo ACA公開 | Bicepとスクリプト実装済み、Azure実デプロイ未検証 |
+| 指定パブリックIPv4だけに許可するDemo／Control ACA公開 | Bicepとスクリプト実装済み、Azure実デプロイ未検証 |
 
 Azure Fault 6種は、対象サブスクリプションで開始、観測、停止、復旧を確認してから演習に使用してください。
 バックグラウンドワークロードは監視データ生成用に継続実行します。Faultの開始・停止は自動化せず、Control Appからの明示操作だけで行います。
 
 ## アーキテクチャ
 
-基盤リソースグループは1つですが、障害対象の Demo 系と障害操作用の Control 系は、VNet、Container Apps Environment、ACR、Managed Identity を分離します。リソースグループは管理・RBAC・削除の単位であり、Network Fault の障害境界はネットワーク経路と実行環境の分離で確保します。SRE Agent 用リソースグループだけを別に作成します。
+基盤リソースグループは1つですが、障害対象のDemo系と障害操作用のControl系は、サブネット、Container Apps Environment、ACR、Managed Identityを分離します。リソースグループは管理・RBAC・削除の単位であり、Network Faultの障害境界はネットワーク経路と実行環境の分離で確保します。SRE Agent用リソースグループだけを別に作成します。
 
 ```mermaid
 flowchart LR
-  User[参加者]
+  User[操作者]
   subgraph InfraRG[基盤 RG]
-    subgraph DemoPlane[Demo VNet / ACA Environment]
-      Demo[Demo App]
-      SQL[(Azure SQL)]
-      VM[Windows VM]
+    subgraph Hub[Hub VNet 10.1.0.0/16]
+      HubVM[Hub Windows VM]
       FW[Azure Firewall]
-      DemoACR[Demo ACR]
-    end
-    subgraph ControlPlane[Control VNet / ACA Environment]
       Control[Fault Control App]
       State[(Azure Table Storage)]
       ControlACR[Control ACR]
     end
+    subgraph Spoke1[Spoke1 VNet 10.2.0.0/16]
+      Demo[Demo App]
+      SQL[(Azure SQL)]
+      DemoACR[Demo ACR]
+    end
+    subgraph Spoke2[Spoke2 VNet 10.3.0.0/16]
+      Spoke2VM[Spoke2 Windows VM]
+    end
     Monitor[Log Analytics / App Insights / Alerts]
   end
   subgraph AgentRG[空の SRE Agent RG]
-    Agent[SRE Agent: 参加者が作成]
+    Agent[SRE Agent]
   end
 
   User --> Demo
-  User -->|Entra ID| Control
+  User --> Control
+  Hub <-->|VNet Peering| Spoke1
+  Hub <-->|VNet Peering| Spoke2
   Demo --> SQL
   Demo --> State
   Control --> State
   Demo --> Monitor
   SQL --> Monitor
-  VM --> Monitor
+  HubVM --> Monitor
+  Spoke2VM --> Monitor
   Agent --> Monitor
   Agent --> InfraRG
 ```
 
-Control VNet は Demo のHub/Spoke VNetとピアリングせず、Demo側のFirewallとUDRを使用しません。両アプリは専用ACRからManaged Identityでイメージを取得します。操作イベント、Fault状態、監査ログは障害対象SQLではなくAzure Table Storageへ保存します。
+Control AppはHub VNet内の専用ACAサブネットへ配置し、このサブネットにはFirewall向けUDRを関連付けません。Demo AppとはContainer Apps Environment、ACR、Managed Identityを分離し、Network Faultの対象にも含めません。両アプリは専用ACRからManaged Identityでイメージを取得します。操作イベント、Fault状態、監査ログは障害対象SQLではなくAzure Table Storageへ保存します。
 
-Demo Appは既定で内部ACAに配置されるため、BastionでVMへ接続し、VM内のブラウザから操作します。デプロイ時に単一のパブリックIPv4アドレスを指定した場合だけACAを公開し、そのアドレスの`/32`から直接アクセスできます。Control Appは常にインターネット公開され、Entra IDで保護されます。
+Demo AppとControl Appは既定で内部ACAに配置されるため、BastionでVMへ接続し、VM内のブラウザから操作します。デプロイ時に単一のパブリックIPv4アドレスを指定した場合だけ両Appを公開し、そのアドレスの`/32`から直接アクセスできます。
 
 ## デプロイ内容
 
 ### 基盤 RG: `rg-sre-demo`
 
 - Demo App、Demo Container Apps Environment、Demo ACR、Demo Managed Identity
-- Hub/Spoke VNet、Azure Firewall、Bastion、Windows VM
+- VNet × 3（Hub、Spoke1、Spoke2）、Azure Firewall、Bastion、Windows VM × 2（Hub、Spoke2）
 - Azure SQL DatabaseとPrivate Endpoint
 - VM Fault専用4 GiB Standard SSD E1（`F:`、`SREFAULT`）
-- Fault Control App、Control Container Apps Environment、Control VNet、Control ACR、Control Managed Identity
+- Fault Control App、Control Container Apps Environment、Hub VNet内のControl専用サブネット、Control ACR、Control Managed Identity
 - Azure Table Storage: `ActivityEvents`、`FaultState`、`AuditLog`
 - Log Analytics、Application Insights、Data Collection Rule、Action Group、Alert Rules
 
 ### Agent RG: `rg-sre-agent`
 
-デプロイ直後は空です。SRE Agent本体は主催者のスクリプトでは作成せず、参加者が演習中に作成します。
+デプロイ直後は空です。SRE Agent本体はデプロイスクリプトでは作成されないため、基盤デプロイ後に作成します。
 
 ## 前提条件
 
@@ -89,13 +95,10 @@ Demo Appは既定で内部ACAに配置されるため、BastionでVMへ接続し
 - Azure CLIのContainer Apps拡張
 - Git
 - 対象サブスクリプションでリソースとロール割り当てを作成できる権限
-- Control App用の単一テナントMicrosoft Entraアプリ登録とクライアントID
 - `Microsoft.App`など、テンプレートが使用するAzureリソースプロバイダーの登録
 - SRE Agent対応リージョンと、ブラウザから必要なAzure/SRE Agentエンドポイントへの通信
 
-GitHub Actions OIDCを設定する場合だけGitHub CLIも必要です。
-
-## 主催者のデプロイ
+## 環境のデプロイ
 
 1. Azureへサインインし、対象サブスクリプションを選択します。
 
@@ -111,7 +114,6 @@ $env:SRE_ADMIN_USERNAME = 'azureadmin' # 省略可
 $env:SRE_ADMIN_PASSWORD = '<VM-password>'
 $env:SRE_SQL_PASSWORD = '<SQL-password>'
 $env:SRE_NOTIFICATION_EMAIL = '<alert-email>'
-$env:SRE_CONTROL_ENTRA_CLIENT_ID = '<control-app-client-id>'
 ```
 
 3. 一括デプロイを実行します。
@@ -126,49 +128,54 @@ $env:SRE_CONTROL_ENTRA_CLIENT_ID = '<control-app-client-id>'
   -SreAgentResourceGroup 'rg-my-sre-agent' `
   -SreAgentLocation 'eastus2'
 
-# 手元PCのパブリックIPv4からDemo Appへ直接アクセスする場合
-./scripts/deploy.ps1 -DemoAllowedSourceIp '<your-public-ipv4>'
+# 手元PCのパブリックIPv4から両Appへ直接アクセスする場合
+./scripts/deploy.ps1 -AllowedSourceIp '<your-public-ipv4>'
 ```
 
-`-DemoAllowedSourceIp`にはCIDRを付けず、単一のパブリックIPv4アドレスを指定します。スクリプトがACA Ingressへ`<address>/32`のAllowルールを設定し、それ以外の送信元を拒否します。省略時はインターネット公開せず、Bastion/VNet経由で操作します。
+`-AllowedSourceIp`にはCIDRを付けず、単一のパブリックIPv4アドレスを指定します。スクリプトがDemo AppとControl AppのACA Ingressへ`<address>/32`のAllowルールを設定し、それ以外の送信元を拒否します。省略時は両Appをインターネット公開せず、BastionでVMへ接続してVM内のブラウザから操作します。
 
-Container Apps Environmentの内部／公開モードは作成後に変更できません。既存環境のモードと指定内容が異なる場合、スクリプトは変更前に停止します。対象がDemo環境であることを確認し、次の順でDemo AppとEnvironmentを削除してから再実行してください。SQL、VM、Control Appは削除されません。
+Container Apps Environmentの内部／公開モードは作成後に変更できません。既存環境のモードと指定内容が異なる場合、スクリプトは変更前に停止します。モードを切り替える場合は、対象がデモ環境であることを確認し、両AppとEnvironmentを削除してから再実行してください。SQL、VM、Storageは削除されません。
+
+旧Control VNet構成から更新する場合は、スクリプトが旧構成を検出して停止します。削除対象が旧Control App、Environment、Table Private Endpoint、Private DNS link、Control VNetであることを確認し、次のように再実行してください。Storage、Demo App、SQL、VMは削除しません。
+
+```powershell
+./scripts/deploy.ps1 -MigrateLegacyControlNetwork
+```
 
 ```powershell
 az containerapp delete --name sre-demo-app --resource-group '<infrastructure-rg>' --yes
 az containerapp env delete --name sre-demo-cae --resource-group '<infrastructure-rg>' --yes
-./scripts/deploy.ps1 -ResourceGroup '<infrastructure-rg>' -DemoAllowedSourceIp '<your-public-ipv4>'
+az containerapp delete --name srectrl-app --resource-group '<infrastructure-rg>' --yes
+az containerapp env delete --name srectrl-cae --resource-group '<infrastructure-rg>' --yes
+./scripts/deploy.ps1 -ResourceGroup '<infrastructure-rg>' -AllowedSourceIp '<your-public-ipv4>'
 ```
+
+公開モードのまま許可IPだけを変更する場合、EnvironmentやAppの再作成は不要です。Azure Portalの各Container AppにあるNetworking > Ingress > IP Restrictions、または`az containerapp ingress access-restriction set`で`AllowDeploymentOperator`ルールを更新できます。次回デプロイ時にも同じIPを`-AllowedSourceIp`へ指定してください。
 
 スクリプトは次の順に実行します。
 
 1. 基盤RGと空のAgent RGを作成
 2. Demo用Log Analyticsを先行作成
-3. Controlテンプレートを基盤RGへデプロイ
-4. Control Storageの出力を渡してDemoテンプレートを同じ基盤RGへデプロイ
-5. Control AppとDemo Appを各専用ACRでビルド
-6. Container AppとJobをコミットハッシュ＋デプロイ時刻タグのイメージへ更新
+3. Fault状態用Storageを基盤RGへデプロイ
+4. Storageを接続してDemo基盤とHub VNet内のControl専用サブネットをデプロイ
+5. Control AppをHub VNetの専用サブネットへデプロイ
+6. Control AppとDemo Appを各専用ACRでビルド
+7. Container AppとJobをコミットハッシュ＋デプロイ時刻タグのイメージへ更新
 
 完了時にDemo URL、Control URL、2つのRG、監視リソースID、Fault Environment IDを表示します。再実行も同じRG名とプレフィックスを使用してください。
 
-GitHub Actions OIDCをDemo ACR/Appへ設定する場合:
+## SRE Agentの作成と演習
 
-```powershell
-./scripts/deploy.ps1 -EnableOidc -GitHubRepo 'owner/repository'
-```
-
-## 参加者の手順
-
-1. `https://sre.azure.com/`を開き、指定されたAgent RGにSRE Agentを作成します。
+1. `https://sre.azure.com/`を開き、Agent RGにSRE Agentを作成します。
 2. 基盤RGをAzureスコープとして接続します。
 3. `sre-demo-law`と`sre-demo-appi`を監視コンテキストへ追加します。
 4. `knowledge/`のファイルをKnowledge Sourceへ登録します。
 5. `infra/prompts/incident-auto.md`または`incident-review.md`を使ってインシデント応答プランを設定します。
-6. Demo Appで正常状態を確認し、Control Appから指定されたFaultを開始します。
+6. Demo Appで正常状態を確認し、Control Appから検証するFaultを選んで開始します。
 7. アラート、Agentの調査、復旧操作、成功率の回復を確認します。
 8. 演習終了時にすべてのFaultを停止またはリセットします。
 
-Agent作成と接続には、Agent RGと基盤RGへ必要なRBACが必要です。権限はRGスコープに限定し、可能ならPIMで演習時間だけ有効化してください。
+Agent作成と接続には、Agent RGと基盤RGへの適切なRBAC割り当てが必要です。権限はRGスコープに限定し、可能ならPIMで作業中だけ有効化してください。
 
 ## アプリの使い方
 
@@ -189,10 +196,9 @@ Agent作成と接続には、Agent RGと基盤RGへ必要なRBACが必要です�
 
 ### Fault Control App
 
-Microsoft Entra IDで認証して使用します。期間、操作元、操作種別で絞り込み、時間バケットごとの成功／失敗件数と成功率を確認できます。Fault一覧にはdesired state、observed state、開始時刻、最終確認時刻が表示されます。
+期間、操作元、操作種別で絞り込み、時間バケットごとの成功／失敗件数と成功率を確認できます。Fault一覧にはdesired state、observed state、開始時刻、最終確認時刻が表示されます。
 
-- Reader: DashboardとFault状態を閲覧
-- Operator: Faultの開始、停止、緊急停止、リセット
+- 操作監査の操作者IDは`demo-operator`として記録されます。変更APIは同一オリジンのリクエストだけを受け付けます。
 - 状態確認時刻が古い場合: 実状態を断定せず「状態確認不能」として扱う
 
 ## Faultカタログ
@@ -215,7 +221,7 @@ FaultにTTLや自動停止はありません。停止、緊急停止、または
 
 VMディスクFaultは`F:\SreFault\disk-pressure.bin`だけを使用し、`C:`と`D:`を操作しません。空き8%を目標とし、256 MiBを絶対下限として残します。
 
-Network Denyは`SreFaultRuleCollectionGroup`だけを更新し、Spoke2 (`10.3.0.0/16`) からSpoke1 (`10.2.0.0/16`) への通信を遮断します。Control VNetは対象に含みません。SQL Faultは固定クエリだけを実行し、Demo Appが作成する専用低権限ユーザーの接続文字列をContainer Apps secretとしてRunnerへ渡します。
+Network Denyは`SreFaultRuleCollectionGroup`だけを更新し、Spoke2 (`10.3.0.0/16`) からSpoke1 (`10.2.0.0/16`) への通信を遮断します。Hub VNet内のControl専用サブネットは対象に含みません。SQL Faultは固定クエリだけを実行し、Demo Appが作成する専用低権限ユーザーの接続文字列をContainer Apps secretとしてRunnerへ渡します。
 
 ## 監視とアラート
 
@@ -234,8 +240,8 @@ VMログとPerfはAzure Monitor AgentとDCRでLog Analyticsへ、アプリテレ
 ## 安全上の制約
 
 - 本番環境へのデプロイは禁止です。
-- DemoとControlは同じRGでもVNet、ACA Environment、ACR、Identityを分離します。
-- Control VNetはDemoのFirewall、UDR、Private DNSへ依存しません。
+- DemoとControlは同じRGとHub VNetを使用しますが、サブネット、ACA Environment、ACR、Identityを分離します。
+- Control Appの専用サブネットにはFirewall向けUDRを関連付けません。InternalモードではControl ACAのPrivate DNSをHub VNetへリンクし、Bastion接続先VMから直接アクセスします。
 - Shared Keyを無効化し、StorageアクセスはManaged IdentityとTable単位RBACを使用します。
 - Demo IdentityにVM、SQL、Firewallを変更する管理プレーン権限を付与しません。
 - Control APIは固定Faultカタログだけを受け付け、操作をAuditLogへ記録します。
@@ -245,10 +251,10 @@ VMログとPerfはAzure Monitor AgentとDCRでLog Analyticsへ、アプリテレ
 
 | 症状 | 確認事項 |
 |---|---|
-| デプロイ前に停止する | 必須環境変数、`az login`、選択中サブスクリプション、Control Entra Client ID |
+| デプロイ前に停止する | 必須環境変数、`az login`、選択中サブスクリプション、`-AllowedSourceIp`の形式 |
 | Bicepデプロイが失敗する | Resource Provider、リージョンのSKU/Quota、ポリシー、デプロイOperation |
-| Control Appが401/403 | App Registrationのissuer/audience、組み込み認証、Reader/Operator role claim |
-| Dashboardにデータがない | Demo IdentityのTable RBAC、両VNetのTable Private Endpoint/DNS、AUTOワークロード |
+| Control Appが403 | 許可元IP、変更APIのOrigin/Host、プロキシ経由時の`X-Forwarded-Host` |
+| Dashboardにデータがない | Demo IdentityのTable RBAC、Hub内Table Private Endpoint、Hub／Spoke1のPrivate DNS link、AUTOワークロード |
 | Faultが状態確認不能 | `lastHeartbeatAt`、Demo AppまたはRunnerのログ、Storage到達性、generation不一致 |
 | アラートが発火しない | DCR association、Perf/Eventテーブル、評価期間、Action Group、対象ディメンション |
 | Faultを停止できない | 緊急停止を要求し、Runner/Reconciler、対象プロセス、Firewall専用ルールを確認 |
@@ -273,21 +279,19 @@ VMログとPerfはAzure Monitor AgentとDCRでLog Analyticsへ、アプリテレ
 
 `-NoConfirm`は確認なしで削除を開始します。SRE Agentの継続課金を避けるため、保持が必要な場合以外はAgent RGも削除してください。
 
-`-EnableOidc`で作成または再利用したEntraアプリ`sre-demo-github-actions`は、RG削除の対象外です。不要になった場合は、他の環境やリポジトリで使用していないことを確認してからEntra ID側で削除してください。
-
 ## リポジトリ構成
 
 | パス | 内容 |
 |---|---|
 | `app/` | Demo App、AUTOワークロード、Activity Writer、アプリ内Fault Adapter |
-| `control-app/` | Dashboard、Fault API、認可、監査、固定Faultカタログ |
+| `control-app/` | Dashboard、Fault API、同一オリジン保護、監査、固定Faultカタログ |
 | `fault-runner/` | Azure Fault 6種の固定executor、状態更新、Reconciler |
 | `infra/main.bicep` | Demo系Hub/Spoke、SQL、VM、監視、Demo App |
-| `infra/control-main.bicep` | Control VNet、Storage、Control ACR/ACA、Control App |
+| `infra/control-main.bicep` | Hub VNetの専用サブネットを使用するControl ACR/ACA、Control App |
 | `infra/modules/` | 各AzureリソースのBicepモジュール |
 | `infra/prompts/` | SRE Agentの応答プランとタスク用プロンプト |
 | `knowledge/` | Agentへ登録するアプリ、DB、ネットワーク、基盤の知識 |
-| `scripts/deploy.ps1` | 2 RG作成、Control先行、Demo後続、アプリとFault実行系のデプロイ |
+| `scripts/deploy.ps1` | 2 RG作成、Storage、Demo基盤、Control App、Fault実行系の順次デプロイ |
 | `scripts/destroy.ps1` | 基盤RGとAgent RGの削除 |
 
 ## ローカルテスト

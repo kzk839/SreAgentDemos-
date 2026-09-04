@@ -4,7 +4,7 @@
 ## アプリケーション構成
 
 - Demo App: Spoke1 VNetの専用Container Apps Environment上で稼働。既定は内部公開で、デプロイ時に単一のパブリックIPv4を指定した場合だけ、その`/32`からアクセス可能
-- Control App: Demo Appとは別のVNet、Container Apps Environment、ACR、Managed Identityで稼働し、Microsoft Entra IDで保護
+- Control App: Hub VNet内のUDRなし専用サブネットで、Demo Appとは別のContainer Apps Environment、ACR、Managed Identityを使用。公開時は指定された単一IPv4の`/32`からだけアクセス可能
 - ランタイム: Node.js (Express) + Application Insights SDK
 - データベース: Azure SQL Database（Private Endpoint 経由）
 - イメージ: Demo ACRはPrivate Endpoint経由。Control ACRはパブリックエンドポイントをManaged Identityで利用

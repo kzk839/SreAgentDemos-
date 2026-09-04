@@ -3,9 +3,8 @@ using './control-main.bicep'
 param prefix = 'srectrl'
 param containerImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 param targetPort = 80
-param entraClientId = '00000000-0000-0000-0000-000000000000'
-param entraIssuer = 'https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0'
+param allowedSourceIpAddress = readEnvironmentVariable('SRE_ALLOWED_SOURCE_IP', '')
 param faultEnvironmentId = 'replace-with-target-environment-resource-id'
-param vnetAddressPrefix = '10.4.0.0/16'
-param infrastructureSubnetPrefix = '10.4.0.0/23'
-param privateEndpointSubnetPrefix = '10.4.2.0/24'
+param storageAccountName = readEnvironmentVariable('SRE_FAULT_STORAGE_ACCOUNT')
+param virtualNetworkId = readEnvironmentVariable('SRE_HUB_VNET_ID')
+param infrastructureSubnetId = readEnvironmentVariable('SRE_CONTROL_INFRASTRUCTURE_SUBNET_ID')

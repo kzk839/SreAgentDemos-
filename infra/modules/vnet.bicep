@@ -35,6 +35,9 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-01-01' = {
             id: subnet.routeTableId
           }
         } : {},
+        contains(subnet, 'privateEndpointNetworkPolicies') ? {
+          privateEndpointNetworkPolicies: subnet.privateEndpointNetworkPolicies
+        } : {},
         contains(subnet, 'delegations') ? {
           delegations: subnet.delegations
         } : {}
